@@ -322,6 +322,28 @@ Two rules about *how* to add it:
 Inputs that do **not** belong in the hash: the destination registry/tag, and build resources
 (timeout, machine type, disk size). None of them change image content.
 
+**A base's non-root `USER` is the user the image ends as.** `Image.to_spec` starts
+`ctx.current_user` from it, so the final `USER` and every plugin that switches back after
+installing (the IDE plugins do) return to the base's user rather than to root. The builder does
+not manage the active user between fragments: **a plugin that needs root wraps its fragment in
+`ctx.as_root(...)`**, which switches to root and back to `ctx.current_user`. A new root-needing
+plugin that skips it builds fine against a root base and fails, with a permission error, the first
+time it follows an IDE plugin on a base that keeps its user. `as_root` is a no-op while
+`current_user` is root, so definitions without a non-root user render, and are tagged, as before;
+those using the `user` plugin gain the switches after it.
+
+**`ctx.project_root` is the one place the project lives; `ctx.home` only supplies its default.**
+Whatever sets `home` — the `user` plugin, and a named non-root base user (`/home/<user>`, since
+`/root` is closed to it) — sets `project_root` to `<home>/work` with it, and a `project` plugin's
+`target` overrides that. Plugins read `project_root`; one that recomputes `<home>/work` points past a
+`target` (the server plugin once did).
+
+**The active user and its group are two fields, set together.** `ctx.current_user` never holds a
+`:group`; the group is `ctx.current_group` (`None` for the user's own-named group), and whatever sets
+the user — the base's `USER`, the `user` plugin, a `USER` in `raw-lines` — sets both, so a group
+cannot outlive its user. Plugins chown to `ctx.owner` and emit `USER {ctx.user_spec}`; building
+`user:group` from `current_user` by hand renders `app:grp:app:grp` once a base declares a group.
+
 **An image with no plugins and no `run_commands` is its base, unchanged.** `Image._render_dockerfile`
 emits no idegym stage for it — no `SHELL`, `ENV` or `USER` — so a caller can send a plain Dockerfile
 and get the image `docker build` would produce. Callers rely on that equivalence (Varvara builds

@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -8,7 +9,15 @@ from idegym.api.plugin import BuildContext, PluginBase, get_all_server_plugins, 
 from idegym.image.builder import Image
 from idegym.image.docker_service import DockerService
 from idegym.image.serialization import deserialize_plugin, serialize_plugin
-from idegym.plugins.defaults.image import BaseSystem, IdeGYMServer, MCPUpstream, Permissions, Project, User
+from idegym.plugins.defaults.image import (
+    BaseSystem,
+    IdeGYMServer,
+    MCPUpstream,
+    Permissions,
+    Project,
+    RawLines,
+    User,
+)
 from idegym.plugins.idea.image import Idea
 from idegym.plugins.plugin_utils import PluginSource, render_external_plugins
 from idegym.plugins.pycharm.image import PyCharm
@@ -520,6 +529,268 @@ def test_an_image_without_plugins_is_tagged_apart_from_one_with_them():
     assert plain.image_version() != with_plugin.image_version()
 
 
+def _final_user(dockerfile: str) -> str:
+    return [line for line in dockerfile.splitlines() if line.startswith("USER ")][-1]
+
+
+def test_a_base_user_survives_the_plugins():
+    """The generated stage used to end as root whatever the base declared."""
+    dockerfile = Image.from_dockerfile(_USER_DOCKERFILE).with_plugin(BaseSystem()).to_spec().dockerfile_content
+    assert _final_user(dockerfile) == "USER app"
+    # Plugins still install as root.
+    assert dockerfile.index("USER root") < dockerfile.index("apt-get install")
+
+
+def test_a_plugin_after_one_that_switched_back_still_starts_as_root():
+    """Idea returns to ctx.current_user, which is now the base's user, so the next plugin's chmod
+    would otherwise run as that user."""
+    image = (
+        Image.from_dockerfile(_USER_DOCKERFILE)
+        .with_plugin(Idea())
+        .with_plugin(Permissions(paths={"/tmp/ide-config": {"mode": "777"}}))
+    )
+    lines = image.to_spec().dockerfile_content.splitlines()
+    chmod = next(index for index, line in enumerate(lines) if "chmod -R 777 /tmp/ide-config" in line)
+    users_before = [line for line in lines[:chmod] if line.startswith("USER ")]
+    assert users_before[-1] == "USER root"
+    assert "USER app" in users_before
+    assert _final_user("\n".join(lines)) == "USER app"
+
+
+def test_as_root_leaves_a_fragment_alone_when_the_image_runs_as_root():
+    assert BuildContext(base="x").as_root("RUN true") == "RUN true"
+
+
+def test_as_root_switches_to_root_and_back_for_any_other_user():
+    assert BuildContext(base="x", current_user="1000").as_root("RUN true") == "USER root\nRUN true\nUSER 1000"
+
+
+def test_a_plugin_that_needs_root_switches_to_it_itself_after_the_user_plugin():
+    """The user plugin makes appuser current, so what follows can no longer assume root."""
+    image = (
+        Image.from_base("debian:bookworm-slim")
+        .with_plugin(User(username="appuser"))
+        .with_plugin(Permissions(paths={"/srv": {"mode": "755"}}))
+    )
+    lines = image.to_spec().dockerfile_content.splitlines()
+    chmod = next(index for index, line in enumerate(lines) if "chmod -R 755 /srv" in line)
+    assert [line for line in lines[:chmod] if line.startswith("USER ")][-1] == "USER root"
+    assert next(line for line in lines[chmod:] if line.startswith("USER ")) == "USER appuser"
+
+
+@mark.parametrize("user", ["", "USER root\n", "USER 0:0\n"])
+def test_a_root_or_undeclared_base_user_renders_as_before(user):
+    # Every existing definition whose base does not keep a user of its own keeps its tag.
+    reference = Image.from_dockerfile("FROM debian:bookworm-slim\n").with_plugin(Idea()).with_plugin(BaseSystem())
+    image = Image.from_dockerfile(f"FROM debian:bookworm-slim\n{user}").with_plugin(Idea()).with_plugin(BaseSystem())
+    rendered, expected = image.to_spec().dockerfile_content, reference.to_spec().dockerfile_content
+    marker = 'SHELL ["/bin/bash", "-c"]'
+    assert rendered[rendered.index(marker) :] == expected[expected.index(marker) :]
+
+
+def test_a_base_user_is_inherited_from_the_stage_it_is_built_from():
+    dockerfile = "FROM debian:bookworm-slim AS runtime\nUSER 1000\nFROM runtime\nRUN true\n"
+    assert _final_user(Image.from_dockerfile(dockerfile).with_plugin(BaseSystem()).to_spec().dockerfile_content) == (
+        "USER 1000"
+    )
+
+
+def test_a_base_user_is_read_from_the_selected_base_stage():
+    dockerfile = "FROM debian:bookworm-slim AS runtime\nUSER 1000\nFROM debian:bookworm-slim\nUSER 2000\n"
+    image = Image.from_dockerfile(dockerfile, base_stage="runtime").with_plugin(BaseSystem())
+    assert _final_user(image.to_spec().dockerfile_content) == "USER 1000"
+
+
+def test_a_variable_base_user_falls_back_to_root_and_says_so():
+    image = Image.from_dockerfile("FROM debian:bookworm-slim\nARG UID=1000\nUSER $UID\n").with_plugin(BaseSystem())
+    spec = image.to_spec()
+    assert _final_user(spec.dockerfile_content) == "USER root"
+    assert any("USER $UID" in warning for warning in spec.warnings)
+
+
+def test_the_user_plugin_still_wins_over_the_base_user():
+    image = Image.from_dockerfile(_USER_DOCKERFILE).with_plugin(User(username="appuser"))
+    assert _final_user(image.to_spec().dockerfile_content) == "USER appuser"
+
+
+def _chowns(dockerfile: str) -> list[str]:
+    return [line.strip() for line in dockerfile.splitlines() if "chown" in line]
+
+
+def test_a_base_user_with_a_group_is_split_into_user_and_group():
+    """``USER app:grp`` used to land whole in current_user, so plugins chowned to app:grp:app:grp."""
+    image = (
+        Image.from_dockerfile("FROM debian:bookworm-slim\nUSER app:grp\n")
+        .with_plugin(Project.from_git_clone(url="https://example.com/repo.git"))
+        .with_plugin(_git_idegym_server())
+    )
+    dockerfile = image.to_spec().dockerfile_content
+    assert "app:grp:" not in dockerfile
+    assert "chown app:grp /etc/idegym /etc/idegym/plugins.json" in _chowns(dockerfile)
+    assert "chown -R app:grp /home/app/work" in _chowns(dockerfile)
+    assert _final_user(dockerfile) == "USER app:grp"
+
+
+def test_a_user_in_raw_lines_replaces_the_group_of_the_user_plugin():
+    """The group used to live in an extra only the user plugin wrote, so it outlived a later USER."""
+    image = (
+        Image.from_base("debian:bookworm-slim")
+        .with_plugin(User(username="appuser", group="staff"))
+        .with_plugin(RawLines(lines=("USER 4242",)))
+        .with_plugin(_git_idegym_server())
+    )
+    dockerfile = image.to_spec().dockerfile_content
+    assert "chown 4242:4242 /etc/idegym /etc/idegym/plugins.json" in _chowns(dockerfile)
+    assert _final_user(dockerfile) == "USER 4242"
+
+
+def _env_project_roots(dockerfile: str) -> list[str]:
+    return re.findall(r'IDEGYM_PROJECT_ROOT="?([^"\s]+)"?', dockerfile)
+
+
+def test_a_named_base_user_gets_the_project_in_its_home():
+    """/root is closed to anyone but root, so a base user could not enter /root/work."""
+    image = (
+        Image.from_dockerfile(_USER_DOCKERFILE)
+        .with_plugin(Project.from_git_clone(url="https://example.com/repo.git"))
+        .with_plugin(_git_idegym_server())
+    )
+    dockerfile = image.to_spec().dockerfile_content
+    assert "git clone https://example.com/repo.git /home/app/work" in dockerfile
+    assert set(_env_project_roots(dockerfile)) == {"/home/app/work"}
+
+
+_NUMERIC_USER_DOCKERFILE = "FROM debian:bookworm-slim\nUSER 1000\n"
+
+
+def test_a_numeric_base_user_keeps_root_work_and_says_so():
+    image = Image.from_dockerfile(_NUMERIC_USER_DOCKERFILE).with_plugin(
+        Project.from_git_clone(url="https://example.com/repo.git")
+    )
+    spec = image.to_spec()
+    assert set(_env_project_roots(spec.dockerfile_content)) == {"/root/work"}
+    assert any("USER 1000" in warning and "/root/work" in warning for warning in spec.warnings)
+
+
+@mark.parametrize(
+    "plugins",
+    [
+        param([BaseSystem()], id="no-project"),
+        param([Project.from_git_clone(url="https://example.com/repo.git", target="/app")], id="project-target"),
+        param([User(username="appuser"), Project.from_git_clone(url="https://example.com/repo.git")], id="user"),
+    ],
+)
+def test_a_numeric_base_user_is_not_reported_once_the_project_is_reachable(plugins):
+    image = Image.from_dockerfile(_NUMERIC_USER_DOCKERFILE)
+    for plugin in plugins:
+        image = image.with_plugin(plugin)
+    assert image.to_spec().warnings == []
+
+
+def test_a_project_placed_before_the_user_plugin_is_reported():
+    image = (
+        Image.from_base("debian:bookworm-slim")
+        .with_plugin(Project.from_git_clone(url="https://example.com/repo.git"))
+        .with_plugin(User(username="appuser"))
+    )
+    assert any("USER appuser" in warning and "/root/work" in warning for warning in image.to_spec().warnings)
+
+
+def test_the_server_serves_the_project_target():
+    """The server used to derive its project root from home, so it looked past a Project target."""
+    image = (
+        Image.from_base("debian:bookworm-slim")
+        .with_plugin(Project.from_git_clone(url="https://example.com/repo.git", target="/app"))
+        .with_plugin(_git_idegym_server())
+    )
+    assert set(_env_project_roots(image.to_spec().dockerfile_content)) == {"/app"}
+
+
+def test_the_user_plugin_moves_the_project_root_to_its_home():
+    image = (
+        Image.from_base("debian:bookworm-slim").with_plugin(User(username="appuser")).with_plugin(_git_idegym_server())
+    )
+    assert set(_env_project_roots(image.to_spec().dockerfile_content)) == {"/home/appuser/work"}
+
+
+def test_the_user_plugin_leaves_a_project_placed_before_it():
+    image = (
+        Image.from_base("debian:bookworm-slim")
+        .with_plugin(Project.from_git_clone(url="https://example.com/repo.git"))
+        .with_plugin(User(username="appuser"))
+        .with_plugin(_git_idegym_server())
+    )
+    dockerfile = image.to_spec().dockerfile_content
+    assert "git clone https://example.com/repo.git /root/work" in dockerfile
+    assert set(_env_project_roots(dockerfile)) == {"/root/work"}
+
+
+def test_a_root_base_keeps_root_work():
+    image = Image.from_dockerfile("FROM debian:bookworm-slim\nUSER root\n").with_plugin(_git_idegym_server())
+    spec = image.to_spec()
+    assert set(_env_project_roots(spec.dockerfile_content)) == {"/root/work"}
+    assert spec.warnings == []
+
+
+def test_a_group_in_raw_lines_is_the_one_the_image_ends_as():
+    image = Image.from_base("debian:bookworm-slim").with_plugin(RawLines(lines=("USER 4242:4343",)))
+    assert _final_user(image.to_spec().dockerfile_content) == "USER 4242:4343"
+
+
+def test_the_project_is_chowned_to_the_user_plugin_group():
+    image = (
+        Image.from_base("debian:bookworm-slim")
+        .with_plugin(User(username="appuser", group="staff"))
+        .with_plugin(Project.from_git_clone(url="https://example.com/repo.git"))
+    )
+    assert "chown -R appuser:staff /home/appuser/work" in _chowns(image.to_spec().dockerfile_content)
+
+
+# ---------------------------------------------------------------------------
+# raw-lines plugin
+# ---------------------------------------------------------------------------
+
+
+def test_raw_lines_are_rendered_verbatim_as_root():
+    image = Image.from_dockerfile(_USER_DOCKERFILE).with_plugin(RawLines(lines=("ENV X=Y", "RUN apt-get update")))
+    dockerfile = image.to_spec().dockerfile_content
+    assert "ENV X=Y\nRUN apt-get update" in dockerfile
+    assert dockerfile.index("USER root") < dockerfile.index("ENV X=Y")
+    assert _final_user(dockerfile) == "USER app"
+
+
+def test_raw_lines_after_an_ide_plugin_still_run_as_root():
+    image = Image.from_dockerfile(_USER_DOCKERFILE).with_plugin(Idea()).with_plugin(RawLines(lines=("RUN setup",)))
+    lines = image.to_spec().dockerfile_content.splitlines()
+    run = lines.index("RUN setup")
+    assert [line for line in lines[:run] if line.startswith("USER ")][-1] == "USER root"
+
+
+def test_a_user_in_raw_lines_is_the_one_the_image_ends_as():
+    image = Image.from_dockerfile(_USER_DOCKERFILE).with_plugin(RawLines(lines=("USER 4242",)))
+    assert _final_user(image.to_spec().dockerfile_content) == "USER 4242"
+
+
+def test_raw_lines_refuse_a_from():
+    with raises(ValueError, match="cannot contain FROM"):
+        RawLines(lines=("ENV X=Y", "FROM scratch"))
+
+
+def test_raw_lines_refuse_a_parser_directive():
+    with raises(ValueError, match="Parser directives"):
+        RawLines(lines=("# syntax=docker/dockerfile:1", "ENV X=Y"))
+
+
+def test_raw_lines_load_from_an_image_definition():
+    (image,) = Image.load_all(
+        "images:\n- name: demo\n  base_dockerfile: |\n    FROM debian:bookworm-slim\n    USER 1000\n"
+        "  plugins:\n  - type: raw-lines\n    lines: [ENV X=Y]\n"
+    )
+    dockerfile = image.to_spec().dockerfile_content
+    assert "ENV X=Y" in dockerfile
+    assert _final_user(dockerfile) == "USER 1000"
+
+
 def test_inline_base_rejects_a_reserved_user_stage_name():
     with raises(ValueError, match="reserved"):
         Image.from_dockerfile("FROM scratch AS idegym_mine\nFROM scratch\n")
@@ -993,6 +1264,7 @@ def test_builtin_plugins_auto_registered_on_builder_import():
         param(Project.from_local("./src", target="/app"), id="project-local"),
         param(PyCharm(), id="pycharm-defaults"),
         param(PyCharm(version="2024.1"), id="pycharm-custom"),
+        param(RawLines(lines=("ENV X=Y",)), id="raw-lines"),
     ],
 )
 def test_plugin_serialize_deserialize_round_trip(plugin: PluginBase):
@@ -2392,8 +2664,8 @@ def test_idegym_server_render_plugins_config_chowns_to_current_user():
 
 
 def test_idegym_server_render_plugins_config_chowns_with_separate_group():
-    """When a custom group is set via extras, chown uses user:group."""
-    ctx = BuildContext(base="debian:bookworm-slim", current_user="appuser").with_extra("idegym.user.group", "staff")
+    """When the current user has a group of its own, chown uses user:group."""
+    ctx = BuildContext(base="debian:bookworm-slim", current_user="appuser", current_group="staff")
     fragment = _git_idegym_server()._render_plugins_config(ctx)
     assert "chown appuser:staff /etc/idegym /etc/idegym/plugins.json" in fragment
 

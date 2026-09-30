@@ -26,6 +26,7 @@ uv add idegym-image-builder idegym-plugins
   - [base-system](#base-system)
   - [user](#user)
   - [permissions](#permissions)
+  - [raw-lines](#raw-lines)
   - [project](#project)
   - [idegym-server](#idegym-server)
   - [pycharm](#pycharm)
@@ -56,7 +57,9 @@ When you call `image.to_spec()` (or `image.build()`), the builder:
 1. Normalizes `base_dockerfile`, if given: the stage acting as the base is aliased so the generated
    stage can target it, and parser directives are hoisted
 2. Creates a `BuildContext` whose `base` is that alias (or the `base` reference), with defaults
-   (`current_user="root"`, `home="/root"`, `project_root="/root/work"`)
+   (`current_user="root"`, `home="/root"`, `project_root="/root/work"`) — except that a
+   `base_dockerfile` ending as a non-root `USER` starts `current_user` as that user, and a named one
+   starts `home` and `project_root` at `/home/<user>` and `/home/<user>/work`
 3. Iterates through plugins in order; each plugin:
    - `apply(ctx)` — updates the context (e.g., sets `current_user` after creating a user)
    - `render(ctx)` — returns a Dockerfile fragment string
@@ -77,6 +80,8 @@ Image.to_spec()
 
 Everything from the primary `FROM` onwards is generated identically whichever base form was used,
 which is what makes switching an existing definition to an inline base produce an equivalent image.
+The one exception is a base that keeps a non-root user of its own, which only an inline base can
+declare — see [the base's user](#the-bases-user).
 
 The resulting `ImageBuildSpec` contains the complete `dockerfile_content` string and any associated
 metadata (download request, labels, platforms, runtime config, build context reference, build args,
@@ -156,6 +161,40 @@ The build is your Dockerfile as written — the alias above aside — so the ima
 one `docker build` would produce from the file. A `base_stage` other than the last stage adds a lone
 `FROM <that stage>`, and a registry `base` renders as a single `FROM`. This is what lets a caller send
 every build through the orchestrator, including those that are only a task's own Dockerfile.
+
+#### The base's user
+
+**The base's user survives the plugins.** When the base stage ends as a
+non-root `USER` — its own, or one inherited from an earlier stage it is built `FROM` — that user
+becomes `ctx.current_user`: the IDE plugins switch back to it after installing, and the image ends
+as it. Plugins still install as root, because each one that needs root switches to it itself and
+back again (`ctx.as_root`, see [writing custom plugins](#writing-custom-plugins)). With several
+plugins the result is the image `docker build` of your Dockerfile would produce, plus the plugin
+layers:
+
+```dockerfile
+FROM python:3.14-slim AS idegym_base
+USER 1000
+FROM idegym_base
+SHELL ["/bin/bash", "-c"]
+USER root
+...                  # idea installs as root, then switches back: USER 1000
+USER root            # ← permissions switches to root itself…
+RUN chmod -R 777 /tmp/ide-config
+USER 1000            # ← …and back
+USER 1000            # ← the image ends as the base's user
+```
+
+**The project goes in the base user's home.** `/root` is closed to anyone but root, so a named base
+user starts `ctx.home` at `/home/<user>` — what `useradd -m` creates — and the project at
+`/home/<user>/work`. A numeric user (`USER 1000`) names no directory, so the project stays at
+`/root/work`. Set the `project` plugin's `target` to put it anywhere else. Whatever the base, the
+spec records a warning when the image ends as a non-root user with its project still under `/root`.
+
+The `user` plugin still takes precedence, since it sets `current_user` itself. A base whose `USER` is
+a variable (`USER $UID`) cannot be resolved in the generated stage, where the base's `ARG`s are out of
+scope, so the image ends as root and the spec records a warning. A registry `base`, or an inline one
+that declares no `USER` or declares root, renders exactly as before.
 
 :::warning Your ENTRYPOINT, CMD and HEALTHCHECK do not survive
 Inheritance happens at the `FROM`, but plugin fragments render *after* it, so a plugin that declares
@@ -507,8 +546,9 @@ Package names must be valid Debian package names (`^[a-z0-9][a-z0-9+.-]+$`).
 
 ### `user`
 
-Creates a Linux user and group in the container. After this plugin runs, `ctx.current_user` and `ctx.home`
-are updated to the new user, so subsequent plugins and commands run in the correct context.
+Creates a Linux user and group in the container. After this plugin runs, `ctx.current_user`, `ctx.current_group` and `ctx.home`
+are updated to the new user, and `ctx.project_root` to `<home>/work` unless a `project` plugin before
+it has already placed the project, so subsequent plugins and commands run in the correct context.
 
 **Python:**
 ```python
@@ -578,6 +618,36 @@ Permissions(
 - `mode` must be a 3- or 4-digit octal string (e.g., `"755"`, `"0755"`)
 - `owner` sets both user and group ownership (`chown owner:owner`)
 - Both `owner` and `mode` are optional, but at least one must be specified per path
+
+---
+
+### `raw-lines`
+
+Inserts Dockerfile lines verbatim, at the plugin's position in the list — for what no other plugin
+expresses, such as an `ENV`, an `ARG` or a one-off `RUN`.
+
+**Python:**
+```python
+from idegym.plugins.defaults.image import RawLines
+
+RawLines(lines=("ENV X=Y", "RUN some-setup.sh"))
+```
+
+**YAML:**
+```yaml
+- type: raw-lines
+  lines:
+    - ENV X=Y
+    - RUN some-setup.sh
+```
+
+**Notes:**
+- The lines run as root: like every built-in plugin that needs root, this one switches to it
+  itself, so its position after a plugin that switched back to the image's user does not matter.
+- A `USER` in the lines becomes `ctx.current_user` (a `user:group` one also sets
+  `ctx.current_group`): later plugins switch back to it, and the image ends as it.
+- `FROM` is refused — it would start a new stage and leave every later plugin out of the image — and
+  so are parser directives (`# syntax=`, `# escape=`), which only count at the top of a Dockerfile.
 
 ---
 
@@ -1251,9 +1321,10 @@ plugins:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `base` | `str` | — | Base image reference |
-| `current_user` | `str` | `"root"` | Current user (updated by `User` plugin) |
+| `current_user` | `str` | `"root"` | Current user, without a group (updated by `User` plugin) |
+| `current_group` | `Optional[str]` | `None` | Group of `current_user`; `None` means its own-named group |
 | `home` | `str` | `"/root"` | Current user's home directory |
-| `project_root` | `str` | `"/root/work"` | Project root path inside the container |
+| `project_root` | `str` | `"/root/work"` | Project root path inside the container; read it rather than deriving it from `home` |
 | `request` | `Optional[DownloadRequest]` | `None` | Download request (set by `Project` plugin) |
 | `labels` | `dict[str, str]` | `{}` | Docker image labels |
 | `context_path` | `str` | `"."` | Docker build context path |
@@ -1261,6 +1332,22 @@ plugins:
 
 Use `ctx.updated(**kwargs)` to return a modified copy. Use `ctx.with_extra("key", value)` to
 pass data between plugins via `extras`.
+
+**Running as root.** A fragment cannot assume which `USER` is active when it starts: the image may
+keep its base's user, and an IDE plugin switches back to `ctx.current_user` after installing. A
+fragment that needs root — installing packages, writing outside the user's home — wraps itself in
+`ctx.as_root(...)`, which switches to root and back to `ctx.current_user`, and returns the fragment
+unchanged when `current_user` is root:
+
+```python
+def render(self, ctx: BuildContext) -> str:
+    return ctx.as_root(f"RUN echo {self.message!r} > {self.path}")
+```
+
+**User and group.** `current_user` never includes a group; `current_group` holds it, or is `None`
+when the user runs as its own-named group. Chown to `ctx.owner` (`user:group`, the group defaulting
+to the user's name) and switch with `USER {ctx.user_spec}` (`user`, or `user:group` when a group was
+given) rather than assembling either from `current_user`.
 
 **Important:**
 - Plugins are discovered automatically via the `idegym.plugins.image` entry point group. Declare
