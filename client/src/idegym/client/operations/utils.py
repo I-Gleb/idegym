@@ -2,6 +2,7 @@ import asyncio
 import math
 import random
 from asyncio import CancelledError, sleep
+from http import HTTPStatus
 from json import JSONDecodeError, loads
 from typing import Any, Optional, TypeVar
 from uuid import UUID
@@ -11,7 +12,7 @@ from idegym.api.orchestrator.operations import (
     AsyncOperationStatus,
     AsyncOperationStatusResponse,
 )
-from idegym.client.exceptions import IdeGYMTimeoutError, http_error
+from idegym.client.exceptions import IdeGYMHTTPError, IdeGYMTimeoutError, http_error
 from idegym.utils.logging import get_logger
 from pydantic import BaseModel, Field
 
@@ -38,8 +39,27 @@ S = TypeVar("S", bound=BaseModel)
 E = TypeVar("E", bound=BaseModel)
 
 
+# A 4xx other than these says the request itself is wrong — the server is gone, the credentials
+# are bad, the body is invalid — so sending it again unchanged can only fail the same way.
+_RETRYABLE_CLIENT_ERROR_STATUSES = frozenset({HTTPStatus.REQUEST_TIMEOUT, HTTPStatus.TOO_MANY_REQUESTS})
+
+
+def _is_permanent_failure(error: Exception) -> bool:
+    status_code = error.status_code if isinstance(error, IdeGYMHTTPError) else None
+    return (
+        status_code is not None
+        and HTTPStatus.BAD_REQUEST <= status_code < HTTPStatus.INTERNAL_SERVER_ERROR
+        and status_code not in _RETRYABLE_CLIENT_ERROR_STATUSES
+    )
+
+
 def retry_with_backoff(attempts: int, base_delay: float = 0.5):
-    """Decorator that retries an async function with exponential backoff on any exception."""
+    """Decorator that retries an async function with exponential backoff.
+
+    Any exception is retried except an ``IdeGYMHTTPError`` carrying a permanent 4xx status, which
+    is re-raised at once: retrying a ``404`` for a server that was already reaped only adds two
+    more failed calls and two more logged tracebacks before the same error surfaces.
+    """
 
     def decorator(func):
         async def wrapper(*args, **kwargs):
@@ -47,7 +67,9 @@ def retry_with_backoff(attempts: int, base_delay: float = 0.5):
             while retries < attempts:
                 try:
                     return await func(*args, **kwargs)
-                except Exception:
+                except Exception as error:
+                    if _is_permanent_failure(error):
+                        raise
                     retries += 1
                     if retries >= attempts:
                         raise
