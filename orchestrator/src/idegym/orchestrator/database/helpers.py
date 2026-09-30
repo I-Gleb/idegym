@@ -137,7 +137,7 @@ async def validate_server(db: AsyncSession, client_id: UUID, server_id: int):
     """Validate that the client owns the server and that it is in a usable state (ALIVE or REUSED)."""
     server = await _load_owned_server(db=db, client_id=client_id, server_id=server_id)
 
-    if server.availability not in {AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED}:
+    if not AvailabilityStatus(server.availability).is_usable:
         detail = f"IdeGYM server with ID {server_id} is not available (status: {server.availability})"
         if server.details:
             detail = f"{detail}: {server.details}"
@@ -236,7 +236,7 @@ async def find_alive_servers(db: AsyncSession, client_id: UUID) -> list[AliveSer
     servers_info = []
     servers = await get_idegym_servers_by_client_id(db, client_id)
     for server in servers:
-        if server.availability in {AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED}:
+        if AvailabilityStatus(server.availability).is_usable:
             servers_info.append(AliveServerInfo(id=server.id, generated_name=server.generated_name))
     return servers_info
 

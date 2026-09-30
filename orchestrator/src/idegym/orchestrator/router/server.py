@@ -1,6 +1,7 @@
 import asyncio
 from asyncio import CancelledError
 from os import environ as env
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -201,23 +202,25 @@ async def list_servers(client_id: UUID, include_terminal: bool = False) -> ListS
     servers = await list_client_servers(client_id=client_id, include_terminal=include_terminal)
     return ListServersResponse(
         client_id=client_id,
-        servers=[
-            ServerSummary(
-                server_id=server.id,
-                server_name=server.server_name,
-                generated_name=server.generated_name,
-                namespace=server.namespace,
-                availability=server.availability,
-                usable=server.availability in {AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED},
-                image_tag=server.image_tag,
-                created_at=server.created_at,
-                last_activity_at=server.last_heartbeat_time,
-                keepalive_until=server.keepalive_until,
-                details=server.details,
-            )
-            for server in servers
-        ],
+        servers=[ServerSummary(**_server_summary_fields(server)) for server in servers],
     )
+
+
+def _server_summary_fields(server) -> dict[str, Any]:
+    """Map a server record onto the ``ServerSummary`` fields, which the status response extends."""
+    return {
+        "server_id": server.id,
+        "server_name": server.server_name,
+        "generated_name": server.generated_name,
+        "namespace": server.namespace,
+        "availability": server.availability,
+        "usable": AvailabilityStatus(server.availability).is_usable,
+        "image_tag": server.image_tag,
+        "created_at": server.created_at,
+        "last_activity_at": server.last_heartbeat_time,
+        "keepalive_until": server.keepalive_until,
+        "details": server.details,
+    }
 
 
 @router.post("/api/idegym-servers/keepalive")
@@ -268,20 +271,10 @@ async def get_server_status(server_id: int, client_id: UUID) -> ServerStatusResp
     pod_phase, pod_ready = await pod_phase_and_readiness(f"app={server.generated_name}", server.namespace)
     now = current_time_millis()
     return ServerStatusResponse(
-        server_id=server.id,
-        server_name=server.server_name,
-        generated_name=server.generated_name,
-        namespace=server.namespace,
-        availability=server.availability,
-        usable=server.availability in {AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED},
-        image_tag=server.image_tag,
-        created_at=server.created_at,
-        last_activity_at=server.last_heartbeat_time,
+        **_server_summary_fields(server),
         idle_seconds=max(now - server.last_heartbeat_time, 0) / 1000,
-        keepalive_until=server.keepalive_until,
         pod_phase=pod_phase,
         pod_ready=pod_ready,
-        details=server.details,
     )
 
 

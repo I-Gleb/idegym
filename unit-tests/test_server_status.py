@@ -85,6 +85,24 @@ async def test_usable_tracks_the_states_that_accept_requests(stub_orchestrator, 
     assert status.usable is usable
 
 
+def test_only_alive_and_reused_servers_are_usable() -> None:
+    """``FINISHED`` is neither terminal nor usable: the server exists but has been handed back."""
+    assert {status for status in AvailabilityStatus if status.is_usable} == {
+        AvailabilityStatus.ALIVE,
+        AvailabilityStatus.REUSED,
+    }
+    assert not any(status.is_usable and status.is_terminal for status in AvailabilityStatus)
+
+
+def test_status_response_is_the_list_row_plus_the_pod_view() -> None:
+    from idegym.api.orchestrator.servers import ServerStatusResponse, ServerSummary
+
+    extra = set(ServerStatusResponse.model_fields) - set(ServerSummary.model_fields)
+
+    assert issubclass(ServerStatusResponse, ServerSummary)
+    assert extra == {"idle_seconds", "pod_phase", "pod_ready"}
+
+
 async def test_a_crashed_server_reports_its_reason_instead_of_raising(stub_orchestrator) -> None:
     """`validate_server` would 410 here; a status endpoint has to answer."""
     stub_orchestrator(_record(availability=AvailabilityStatus.CRASHED, details="OOMKilled"), pod=(None, False))
