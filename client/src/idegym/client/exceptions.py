@@ -21,7 +21,7 @@ class IdeGYMHTTPError(IdeGYMException, RuntimeError):
     """A call to the orchestrator, or to a server through it, failed.
 
     ``status_code`` is the HTTP status the failure carried. It is ``None`` when the request
-    never produced one — a client-side timeout, for instance.
+    never produced one — a client-side timeout or a connection failure, for instance.
     """
 
     def __init__(
@@ -57,8 +57,22 @@ class IdeGYMNotFoundError(IdeGYMHTTPError):
     """
 
 
-class IdeGYMTimeoutError(IdeGYMHTTPError):
-    """The call did not complete in time. Safe to retry if the operation is idempotent."""
+class IdeGYMTimeoutError(IdeGYMHTTPError, TimeoutError):
+    """The call did not complete in time. Safe to retry if the operation is idempotent.
+
+    Covers both a timeout status from the orchestrator and a deadline the SDK itself enforces —
+    on a request, or on polling an async operation. It is also a builtin ``TimeoutError``,
+    which is what those client-side deadlines used to raise, so an existing
+    ``except TimeoutError`` keeps catching them.
+    """
+
+
+class IdeGYMConnectionError(IdeGYMHTTPError):
+    """The request never got a response: the connection failed or broke off mid-exchange.
+
+    Typically the orchestrator is restarting or unreachable. ``status_code`` is ``None``. Safe to
+    retry if the operation is idempotent — the request may or may not have been acted on.
+    """
 
 
 class IdeGYMBusyError(IdeGYMHTTPError):

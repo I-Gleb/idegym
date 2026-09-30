@@ -810,6 +810,7 @@ except IdeGYMHTTPError as e:
 | `IdeGYMAuthError` | 401, 403 | Credentials are missing, wrong, or insufficient |
 | `IdeGYMNotFoundError` | 404, 410 | The client, server, or operation is gone — including a pod the orchestrator can no longer reach |
 | `IdeGYMTimeoutError` | 408, 504, client-side timeout | Safe to retry if the operation is idempotent |
+| `IdeGYMConnectionError` | none — no response | The connection failed or broke off, e.g. while the orchestrator restarts; retry with backoff |
 | `IdeGYMBusyError` | 429, 503 | Rate-limited or out of capacity; retry with backoff |
 | `IdeGYMCancelledError` | 499 | Cancelled before finishing, usually by a disconnect |
 | `IdeGYMServerError` | 5xx | The orchestrator or the sandbox failed |
@@ -818,8 +819,20 @@ All of them subclass `IdeGYMHTTPError`, which subclasses both `IdeGYMException` 
 `RuntimeError`, and the message text is unchanged from before the typed exceptions existed — so
 an existing `except RuntimeError` still catches everything it used to.
 
-A `IdeGYMTimeoutError` with `status_code is None` is a client-side timeout: the request never
+An `IdeGYMTimeoutError` with `status_code is None` is a client-side timeout: the request never
 reached a status. That is the case to distinguish from a 504, where the orchestrator answered.
+It covers every deadline the SDK enforces itself — a single request's `request_timeout`, the
+wait while an async operation is polled (a long `tools/bash` call, say), and the overall
+server-start wait. `IdeGYMTimeoutError` is also a builtin `TimeoutError`, which is what those
+deadlines raised before, so an existing `except TimeoutError` still catches them. The underlying
+`httpx` exception, when there is one, is chained as `__cause__`, so a `ConnectTimeout` can still be
+told apart from a `ReadTimeout` or a `PoolTimeout`.
+
+A transport failure that produced no response at all — a refused or reset connection, a broken
+exchange — raises `IdeGYMConnectionError`, again with `status_code is None` and the `httpx` error
+as `__cause__`. Code that catches `httpx.TimeoutException` or `httpx.HTTPError` around an SDK call
+no longer sees these; catch `IdeGYMTimeoutError`, `IdeGYMConnectionError` or `IdeGYMHTTPError`
+instead.
 
 ---
 

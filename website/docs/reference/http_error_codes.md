@@ -9,8 +9,10 @@ the **Orchestrator** (Kubernetes orchestration service) and the **IdeGYM Server*
 
 The client turns each of these into a typed exception rather than a bare `RuntimeError`:
 `IdeGYMNotFoundError` for 404 and 410, `IdeGYMBusyError` for 429 and 503, `IdeGYMTimeoutError`
-for 408 and 504, and so on. The status and body are attributes on the exception. The full
-mapping is in [Client Library — Error Handling](client.md#error-handling).
+for 408 and 504, and so on. The status and body are attributes on the exception. A request that
+got no status at all raises `IdeGYMTimeoutError` for a client-side deadline, or
+`IdeGYMConnectionError` when the connection failed, both with `status_code` set to `None`. The
+full mapping is in [Client Library — Error Handling](client.md#error-handling).
 
 A failure reported through an async operation's `result.status_code` is mapped the same way, so
 `429` on a background start-server operation raises the same `IdeGYMBusyError` as `429` on the

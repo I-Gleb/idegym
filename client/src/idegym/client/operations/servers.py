@@ -45,7 +45,7 @@ from idegym.api.type import (
     KubernetesObjectName,
     OCIImageName,
 )
-from idegym.client.exceptions import raise_for_error_response
+from idegym.client.exceptions import IdeGYMTimeoutError, raise_for_error_response
 from idegym.client.operations.project import ProjectOperations
 from idegym.client.operations.utils import HTTPUtils, PollingConfig
 from idegym.utils.logging import get_logger
@@ -94,7 +94,7 @@ class ServerOperations:
         while True:
             elapsed_time = time.time() - start_time
             if elapsed_time >= server_start_wait_timeout_in_seconds:
-                raise TimeoutError(f"Server start timed out after {server_start_wait_timeout_in_seconds} seconds")
+                raise IdeGYMTimeoutError(f"Server start timed out after {server_start_wait_timeout_in_seconds} seconds")
 
             remaining_time = int(server_start_wait_timeout_in_seconds - elapsed_time)
 
@@ -162,7 +162,7 @@ class ServerOperations:
                     )
 
                     if elapsed_time + retry_delay_in_seconds >= server_start_wait_timeout_in_seconds:
-                        raise TimeoutError(
+                        raise IdeGYMTimeoutError(
                             f"Server start timed out after {server_start_wait_timeout_in_seconds} seconds"
                         )
 

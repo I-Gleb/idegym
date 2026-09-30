@@ -7,12 +7,12 @@ from json import JSONDecodeError, loads
 from typing import Any, Optional, TypeVar
 from uuid import UUID
 
-from httpx import AsyncClient, HTTPStatusError, TimeoutException
+from httpx import AsyncClient, HTTPStatusError, TimeoutException, TransportError
 from idegym.api.orchestrator.operations import (
     AsyncOperationStatus,
     AsyncOperationStatusResponse,
 )
-from idegym.client.exceptions import IdeGYMHTTPError, IdeGYMTimeoutError, http_error
+from idegym.client.exceptions import IdeGYMConnectionError, IdeGYMHTTPError, IdeGYMTimeoutError, http_error
 from idegym.utils.logging import get_logger
 from pydantic import BaseModel, Field
 
@@ -148,7 +148,16 @@ class HTTPUtils:
         except TimeoutException as ex:
             message = f"Request timed out: url={url} error='{ex}'"
             logger.error(message)
-            raise IdeGYMTimeoutError(message, method=method, url=url)
+            raise IdeGYMTimeoutError(message, method=method, url=url) from ex
+
+        # After TimeoutException, which is itself a TransportError. What is left never got a
+        # response at all — refused, reset, or cut off mid-exchange, as when the orchestrator
+        # restarts during a rollout — which is the most retryable failure there is, so it has to
+        # be catchable as an IdeGYMHTTPError like every other one.
+        except TransportError as ex:
+            message = f"Request failed without a response: url={url} error='{type(ex).__name__}: {ex}'"
+            logger.error("Request failed without a response", url=url, error=repr(ex))
+            raise IdeGYMConnectionError(message, method=method, url=url) from ex
 
         except HTTPStatusError as ex:
             # The message is deliberately unchanged: it predates the typed exceptions and
@@ -166,7 +175,7 @@ class HTTPUtils:
                 body=ex.response.text,
                 method=method,
                 url=url,
-            )
+            ) from ex
 
         except JSONDecodeError:
             logger.exception(f"Failed to parse JSON response: url={url} data={response.text!r}")
@@ -191,35 +200,45 @@ class HTTPUtils:
 
         Returns an instance of ``success_response_model`` on success, ``error_response_model`` on
         failure or cancellation, or the raw result string if no model is provided.
-        Raises ``TimeoutError`` if ``polling_config.wait_timeout_in_sec`` is exceeded.
+        Raises ``IdeGYMTimeoutError`` if ``polling_config.wait_timeout_in_sec`` is exceeded.
         """
         polling_config = polling_config or PollingConfig()
         logger.debug(f"Polling async operation status with ID {operation_id}")
 
-        async with asyncio.timeout(polling_config.wait_timeout_in_sec):
-            retry = 0
-            while True:
-                await sleep(self._calculate_wait_time_with_jitter(retry=retry, polling_config=polling_config))
+        deadline = asyncio.timeout(polling_config.wait_timeout_in_sec)
+        try:
+            async with deadline:
+                retry = 0
+                while True:
+                    await sleep(self._calculate_wait_time_with_jitter(retry=retry, polling_config=polling_config))
 
-                full_status_raw = await self.make_request("GET", f"/api/operations/status/{operation_id}")
-                full_status = AsyncOperationStatusResponse.model_validate(full_status_raw)
-                short_status = AsyncOperationStatus(full_status.status)
+                    full_status_raw = await self.make_request("GET", f"/api/operations/status/{operation_id}")
+                    full_status = AsyncOperationStatusResponse.model_validate(full_status_raw)
+                    short_status = AsyncOperationStatus(full_status.status)
 
-                if short_status is AsyncOperationStatus.SUCCEEDED:
-                    return self._parse_async_operation_response(
-                        result=full_status.result, short_status=short_status, response_model=success_response_model
-                    )
+                    if short_status is AsyncOperationStatus.SUCCEEDED:
+                        return self._parse_async_operation_response(
+                            result=full_status.result, short_status=short_status, response_model=success_response_model
+                        )
 
-                if short_status in (AsyncOperationStatus.FAILED, AsyncOperationStatus.CANCELLED):
-                    logger.debug(
-                        f"Async operation {operation_id} ended with status {short_status}. "
-                        f"Full details: {full_status.result}"
-                    )
-                    return self._parse_async_operation_response(
-                        result=full_status.result, short_status=short_status, response_model=error_response_model
-                    )
+                    if short_status in (AsyncOperationStatus.FAILED, AsyncOperationStatus.CANCELLED):
+                        logger.debug(
+                            f"Async operation {operation_id} ended with status {short_status}. "
+                            f"Full details: {full_status.result}"
+                        )
+                        return self._parse_async_operation_response(
+                            result=full_status.result, short_status=short_status, response_model=error_response_model
+                        )
 
-                retry += 1
+                    retry += 1
+        except TimeoutError as ex:
+            # A request timing out inside the loop is already an IdeGYMTimeoutError; only the
+            # polling deadline itself needs translating.
+            if not deadline.expired():
+                raise
+            raise IdeGYMTimeoutError(
+                f"Async operation {operation_id} did not finish within {polling_config.wait_timeout_in_sec} seconds"
+            ) from ex
 
     def _calculate_wait_time_with_jitter(self, retry: int, polling_config: PollingConfig) -> float:
         if retry == 0:

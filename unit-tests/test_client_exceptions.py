@@ -17,6 +17,7 @@ from idegym.client.exceptions import (
     IdeGYMBadRequestError,
     IdeGYMBusyError,
     IdeGYMCancelledError,
+    IdeGYMConnectionError,
     IdeGYMHTTPError,
     IdeGYMNotFoundError,
     IdeGYMServerError,
@@ -91,6 +92,86 @@ async def test_make_request_reports_a_client_side_timeout_as_a_timeout() -> None
         await utils.make_request("GET", "/api/idegym-servers")
 
     assert caught.value.status_code is None
+    assert isinstance(caught.value.__cause__, httpx.ReadTimeout)
+
+
+def test_a_timeout_is_still_a_builtin_timeout_error() -> None:
+    error = IdeGYMTimeoutError("slow", status_code=504)
+
+    assert isinstance(error, TimeoutError)
+    assert isinstance(error, IdeGYMHTTPError)
+    assert isinstance(error, RuntimeError)
+    assert (str(error), error.status_code) == ("slow", 504)
+
+
+async def test_make_request_chains_the_status_error() -> None:
+    utils = _utils(lambda request: httpx.Response(500, text="boom"))
+
+    with pytest.raises(IdeGYMServerError) as caught:
+        await utils.make_request("GET", "/api/idegym-servers")
+
+    assert isinstance(caught.value.__cause__, httpx.HTTPStatusError)
+
+
+@pytest.mark.parametrize("transport_error", [httpx.ConnectError, httpx.RemoteProtocolError, httpx.ReadError])
+async def test_make_request_types_a_transport_failure(transport_error) -> None:
+    def fail(request):
+        raise transport_error("connection lost", request=request)
+
+    utils = _utils(fail)
+
+    with pytest.raises(IdeGYMConnectionError) as caught:
+        await utils.make_request("POST", "/api/idegym-servers")
+
+    assert isinstance(caught.value, IdeGYMHTTPError)
+    assert not isinstance(caught.value, IdeGYMTimeoutError)
+    assert (caught.value.status_code, caught.value.method, caught.value.url) == (None, "POST", "/api/idegym-servers")
+    assert isinstance(caught.value.__cause__, transport_error)
+
+
+async def test_polling_deadline_raises_a_typed_timeout() -> None:
+    from idegym.client.operations.utils import PollingConfig
+
+    utils = _utils(
+        lambda request: httpx.Response(
+            200, json={"id": 1, "request_type": "x", "status": "IN_PROGRESS", "scheduled_at": 0}
+        )
+    )
+
+    with pytest.raises(IdeGYMTimeoutError, match="did not finish within") as caught:
+        await utils.wait_for_async_operation_to_end(
+            operation_id=1,
+            # model_construct, since the field is whole seconds and the test should not take one.
+            polling_config=PollingConfig.model_construct(
+                initial_delay_in_sec=0.0,
+                poll_interval_in_sec=0.01,
+                wait_timeout_in_sec=0.1,
+                factor_for_exponential_wait=1.5,
+                max_delay_for_exponential_wait_in_sec=1.0,
+            ),
+        )
+
+    assert caught.value.status_code is None
+    assert isinstance(caught.value, TimeoutError)
+
+
+async def test_a_request_timeout_while_polling_is_not_rewrapped() -> None:
+    def time_out(request):
+        raise httpx.ReadTimeout("read timed out", request=request)
+
+    utils = _utils(time_out)
+
+    with pytest.raises(IdeGYMTimeoutError, match="Request timed out"):
+        await utils.wait_for_async_operation_to_end(operation_id=1)
+
+
+async def test_start_server_deadline_raises_a_typed_timeout(mocker) -> None:
+    operations = _server_operations(mocker, None)
+
+    with pytest.raises(IdeGYMTimeoutError, match="Server start timed out"):
+        await operations.start_server(
+            image_tag="registry.test/env:latest", client_id=uuid4(), server_start_wait_timeout_in_seconds=0
+        )
 
 
 async def test_a_gone_sandbox_is_distinguishable_from_a_busy_control_plane() -> None:
