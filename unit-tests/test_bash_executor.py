@@ -251,7 +251,13 @@ def test_init_prefix_aborts_when_the_integration_cannot_be_read() -> None:
 
 
 def test_argv_runs_the_script_file_directly_when_no_user_is_requested() -> None:
-    assert bash_executor._process_argv("/tmp/script.sh", None) == [bash_executor._BASH, "/tmp/script.sh"]
+    assert bash_executor._process_argv("/tmp/script.sh", None) == [
+        bash_executor._BASH,
+        "-c",
+        bash_executor._EVAL_SCRIPT_FILE,
+        "bash",
+        "/tmp/script.sh",
+    ]
 
 
 def test_argv_drops_to_a_user_without_re_authenticating() -> None:
@@ -264,6 +270,9 @@ def test_argv_drops_to_a_user_without_re_authenticating() -> None:
         "devuser",
         "--",
         bash_executor._BASH,
+        "-c",
+        bash_executor._EVAL_SCRIPT_FILE,
+        "bash",
         "/tmp/script.sh",
     ]
 

@@ -3,6 +3,7 @@ import contextlib
 import os
 import shlex
 import signal
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,6 +45,24 @@ def _process_is_running(process_id: int) -> bool:
 def _kill_process_if_running(process_id: int) -> None:
     with contextlib.suppress(ProcessLookupError):
         os.kill(process_id, signal.SIGKILL)
+
+
+def _bash_version() -> tuple[int, ...]:
+    output = subprocess.run(
+        [bash_executor_module._BASH, "-c", 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"'],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return tuple(int(part) for part in output.split("."))
+
+
+# Under `bash -c`, and `eval` within it, bash before 5.1 miscounts script lines in its error
+# messages, and 3.2 (macOS) omits `line N` for a one-line script. That is bash's own behaviour,
+# not the executor's; the server image ships 5.2.
+_needs_bash_5_1_error_format = pytest.mark.skipif(
+    _bash_version() < (5, 1), reason="bash < 5.1 formats `bash -c` error locations differently"
+)
 
 
 class TestBashExecutor:
@@ -110,13 +129,33 @@ class TestBashExecutor:
         assert stdout == ""
         assert exit_code != 0
 
+    @_needs_bash_5_1_error_format
     @pytest.mark.asyncio
     async def test_bash_reports_errors_at_the_callers_own_line_numbers(self):
         executor = BashExecutor()
 
         _stdout, stderr, _exit_code = await executor.execute_bash_command("true\ntrue\nthis-command-does-not-exist")
 
-        assert "line 3" in stderr
+        assert stderr.startswith("bash: line 3: this-command-does-not-exist:")
+
+    @_needs_bash_5_1_error_format
+    @pytest.mark.asyncio
+    async def test_errors_carry_the_bash_c_prefix_not_the_temp_file_name(self):
+        """`bash <file>` prefixed errors with a per-call temp path, which broke stderr comparisons."""
+        executor = BashExecutor()
+
+        _stdout, stderr, exit_code = await executor.execute_bash_command("nosuchcmd")
+
+        assert stderr.startswith("bash: line 1: nosuchcmd:")
+        assert exit_code == 127
+
+    @pytest.mark.asyncio
+    async def test_dollar_zero_is_bash_and_there_are_no_positional_parameters(self):
+        executor = BashExecutor()
+
+        stdout, _stderr, exit_code = await executor.execute_bash_command('printf "%s %s" "$0" "$#"')
+
+        assert (stdout, exit_code) == ("bash 0", 0)
 
     @pytest.mark.asyncio
     async def test_a_bashrc_ending_in_a_failing_command_does_not_abort_the_script(self, tmp_path):

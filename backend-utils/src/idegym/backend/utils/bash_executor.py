@@ -33,6 +33,13 @@ _EXPORT_ASSIGNMENT_PATTERN = re.compile(
 # then failed with FileNotFoundError, which surfaced as a 404 rather than anything actionable.
 _BASH = shutil.which("bash") or "/bin/bash"
 _RUNUSER = shutil.which("runuser") or "/usr/sbin/runuser"
+# `bash <file>` would set `$0` to the temp path and prefix every error with it
+# (`/tmp/idegym-bash-k3j9x.sh: line 1: ...`, a different name per call), which broke stderr
+# comparisons and made `$(dirname "$0")` resolve to /tmp. Evaluating the file's contents inside
+# `bash -c` keeps what callers had before the script moved out of argv: `$0` is `bash` and errors
+# read `bash: line N:`. `set --` drops the file path from the positional parameters, and the
+# trailing newlines `$(...)` strips are insignificant to bash.
+_EVAL_SCRIPT_FILE = 'eval "set --; $(<"$1")"'
 
 
 class BashExecutorError(Exception):
@@ -245,7 +252,7 @@ def _process_argv(script_path: str, user: Optional[str]) -> list[str]:
     ``runuser`` is used rather than ``su`` because it does not authenticate and keeps the
     caller's environment, which is what the ``env`` argument has already been merged into.
     """
-    invocation = [_BASH, script_path]
+    invocation = [_BASH, "-c", _EVAL_SCRIPT_FILE, "bash", script_path]
     if user is None:
         return invocation
     return [_RUNUSER, "--preserve-environment", "-u", user, "--", *invocation]
@@ -389,8 +396,9 @@ class BashExecutor:
         to run as root, since it shells out through ``runuser``.
 
         Output is returned verbatim unless ``strip_output`` asks for surrounding
-        whitespace to be trimmed. The script itself is written to a temp file and run as
-        ``bash <file>``, so its size is not capped by the kernel's argument limit.
+        whitespace to be trimmed. The script itself is written to a temp file and evaluated
+        by ``bash -c``, so its size is not capped by the kernel's argument limit while ``$0``
+        and error prefixes stay those of ``bash -c``.
 
         Returns a tuple of (stdout, stderr, exit_code).
         Raises BashCommandExecutionTimeoutError if the timeout is exceeded.

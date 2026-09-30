@@ -56,3 +56,12 @@ class TestBashExecutorInDocker:
 
     def test_a_callers_path_does_not_affect_finding_bash_in_docker(self):
         self._run_test("test_a_callers_path_does_not_affect_finding_bash")
+
+    def test_bash_reports_errors_at_the_callers_own_line_numbers_in_docker(self):
+        self._run_test("test_bash_reports_errors_at_the_callers_own_line_numbers")
+
+    def test_errors_carry_the_bash_c_prefix_not_the_temp_file_name_in_docker(self):
+        self._run_test("test_errors_carry_the_bash_c_prefix_not_the_temp_file_name")
+
+    def test_dollar_zero_is_bash_and_there_are_no_positional_parameters_in_docker(self):
+        self._run_test("test_dollar_zero_is_bash_and_there_are_no_positional_parameters")

@@ -52,9 +52,14 @@ finishes or reaches its execution timeout so subprocess pipes cannot deadlock.
 
 #### How the script is run
 
-The script is written to a temp file inside the container and executed as `bash <file>`. There
-is no practical size limit: passing it as a `bash -c` argument used to cap it at the kernel's
-`MAX_ARG_STRLEN` of 128 KiB, and an oversized script failed with a bare `E2BIG`.
+The script is written to a temp file inside the container, and `bash -c` evaluates the file's
+contents. There is no practical size limit: passing the script itself as the `bash -c` argument
+used to cap it at the kernel's `MAX_ARG_STRLEN` of 128 KiB, and an oversized script failed with
+a bare `E2BIG`.
+
+It still behaves like `bash -c`: `$0` is `bash`, there are no positional parameters, and an error
+reads `bash: line 3: nosuchcmd: command not found`. Running the file as `bash <file>` would have
+put the temp file's name, different on every call, in both places.
 
 A file rather than bash's stdin is deliberate. A script read from stdin is consumed
 incrementally, so any command inside it that reads stdin — `cat`, `read`, an interactive
