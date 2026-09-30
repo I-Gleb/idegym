@@ -14,14 +14,15 @@ from idegym.api.type import Duration
 from idegym.backend.utils import kubernetes_client as kc
 
 
-def _pod(phase="Pending", *, waiting=(), terminating=False, containers=1):
+def _pod(phase="Pending", *, waiting=(), terminating=False, containers=1, ready=False):
     statuses = [
         SimpleNamespace(
+            ready=ready,
             state=SimpleNamespace(
                 waiting=SimpleNamespace(reason=reason) if reason else None,
                 terminated=None,
                 running=None,
-            )
+            ),
         )
         for reason in (list(waiting) or [None] * containers)
     ]
@@ -75,6 +76,21 @@ async def test_a_terminating_pod_is_not_the_one_reported(pods) -> None:
     pods(_pod("Running", terminating=True), _pod(waiting=["ContainerCreating"]))
 
     assert "still pulling the image" in await kc.describe_pod_startup("app=srv", "ns")
+
+
+async def test_the_pod_holding_the_wait_up_is_the_one_diagnosed(pods) -> None:
+    """With several pods, a ready one listed first must not hide the one still pulling."""
+    pods(_pod("Running", ready=True), _pod(waiting=["ContainerCreating"]))
+
+    assert await kc.describe_pod_startup("app=srv", "ns") == (
+        "1/2 pods ready; still pulling the image or creating the container (ContainerCreating)"
+    )
+
+
+async def test_a_single_pod_is_described_without_a_count(pods) -> None:
+    pods(_pod(waiting=["ContainerCreating"]))
+
+    assert "pods ready" not in await kc.describe_pod_startup("app=srv", "ns")
 
 
 async def test_an_unrecognised_waiting_reason_is_passed_through(pods) -> None:

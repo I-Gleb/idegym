@@ -434,6 +434,50 @@ async def test_a_refused_scale_up_keeps_the_short_budget_and_names_the_reason(mo
 
 
 # ---------------------------------------------------------------------------
+# pods_are_ready
+# ---------------------------------------------------------------------------
+
+
+def _polled_pod(phase="Pending", *, waiting=None, ready=False, terminating=False):
+    return SimpleNamespace(
+        metadata=SimpleNamespace(name="srv-1", deletion_timestamp=object() if terminating else None),
+        status=SimpleNamespace(
+            phase=phase,
+            conditions=None,
+            container_statuses=[
+                SimpleNamespace(
+                    ready=ready,
+                    state=SimpleNamespace(
+                        waiting=SimpleNamespace(reason=waiting, message="") if waiting else None,
+                    ),
+                )
+            ],
+        ),
+    )
+
+
+@pytest.mark.parametrize("reason", ["ImagePullBackOff", "ErrImagePull", "InvalidImageName"])
+async def test_every_failed_pull_reason_counts_as_an_image_pull_error(mocker, reason):
+    """InvalidImageName never resolves on retry, so it has to trip the fail-fast like the others."""
+    mocker.patch.object(kc, "list_pods", mocker.AsyncMock(return_value=[_polled_pod(waiting=reason)]))
+
+    assert await kc.pods_are_ready("app=srv", "ns") == (False, True, False, False)
+
+
+async def test_a_pull_in_progress_is_not_an_image_pull_error(mocker):
+    mocker.patch.object(kc, "list_pods", mocker.AsyncMock(return_value=[_polled_pod(waiting="ContainerCreating")]))
+
+    assert await kc.pods_are_ready("app=srv", "ns") == (False, False, False, False)
+
+
+async def test_a_terminating_pod_is_reported_but_does_not_decide_readiness(mocker):
+    pods = [_polled_pod("Running", terminating=True), _polled_pod("Running", ready=True)]
+    mocker.patch.object(kc, "list_pods", mocker.AsyncMock(return_value=pods))
+
+    assert await kc.pods_are_ready("app=srv", "ns") == (True, False, True, False)
+
+
+# ---------------------------------------------------------------------------
 # node_scaling_verdict
 # ---------------------------------------------------------------------------
 

@@ -525,6 +525,16 @@ _PULL_IN_PROGRESS_REASONS = frozenset({"ContainerCreating", "PodInitializing"})
 _PULL_FAILED_REASONS = frozenset({"ImagePullBackOff", "ErrImagePull", "InvalidImageName"})
 
 
+def _live_pods(pods: Iterable[V1Pod]) -> list[V1Pod]:
+    """The pods not on their way out: a terminating pod says nothing about the one replacing it."""
+    return [pod for pod in pods if pod.metadata.deletion_timestamp is None]
+
+
+def _pod_is_ready(pod: V1Pod) -> bool:
+    container_statuses = pod.status.container_statuses or []
+    return pod.status.phase == "Running" and bool(container_statuses) and all(c.ready for c in container_statuses)
+
+
 async def describe_pod_startup(label_selector: str, namespace: str) -> str:
     """Say what the pods are actually doing, so a readiness timeout is not an unattributable one.
 
@@ -534,14 +544,24 @@ async def describe_pod_startup(label_selector: str, namespace: str) -> str:
     container that is not ready is a readiness probe that has not passed.
     """
     try:
-        pods = [pod for pod in await list_pods(label_selector, namespace) if pod.metadata.deletion_timestamp is None]
+        pods = _live_pods(await list_pods(label_selector, namespace))
     except Exception as error:  # noqa: BLE001  # a diagnostic must never replace the real failure
         return f"pod state unavailable: {error}"
 
     if not pods:
         return "no pods matched"
 
-    pod = pods[0]
+    # With several replicas, or an old and a new pod overlapping during a rollout, the pod holding
+    # the wait up is the one worth describing, not whichever the API happened to list first.
+    not_ready = [pod for pod in pods if not _pod_is_ready(pod)]
+    diagnosis = _describe_pod(not_ready[0] if not_ready else pods[0])
+    if len(pods) > 1:
+        return f"{len(pods) - len(not_ready)}/{len(pods)} pods ready; {diagnosis}"
+    return diagnosis
+
+
+def _describe_pod(pod: V1Pod) -> str:
+    """What a single pod is doing, in the terms ``describe_pod_startup`` reports."""
     waiting = {
         container.state.waiting.reason
         for container in (pod.status.container_statuses or [])
@@ -728,8 +748,7 @@ async def pods_are_ready(label_selector: str, namespace: str) -> tuple[bool, boo
     so callers can wait for them to disappear before considering the deployment stable.
     """
 
-    async with async_kube_api() as (_, _, core, _, _):
-        pods = (await core.list_namespaced_pod(namespace=namespace, label_selector=label_selector)).items
+    pods = await list_pods(label_selector, namespace)
 
     has_image_pull_error = False
     has_terminating_pods = False
@@ -756,19 +775,15 @@ async def pods_are_ready(label_selector: str, namespace: str) -> tuple[bool, boo
                 for container in pod.status.container_statuses:
                     if container.state and container.state.waiting:
                         reason = container.state.waiting.reason
-                        if reason in ["ImagePullBackOff", "ErrImagePull"]:
+                        if reason in _PULL_FAILED_REASONS:
                             has_image_pull_error = True
                             logger.warning(
                                 f"Pod {pod.metadata.name} has image pull error: {reason} with message: {container.state.waiting.message}"
                             )
                             break
 
-    non_terminating_pods = [pod for pod in pods if pod.metadata.deletion_timestamp is None]
-
-    pods_ready = len(non_terminating_pods) > 0 and all(
-        pod.status.phase == "Running" and all(c.ready for c in pod.status.container_statuses)
-        for pod in non_terminating_pods
-    )
+    live_pods = _live_pods(pods)
+    pods_ready = len(live_pods) > 0 and all(_pod_is_ready(pod) for pod in live_pods)
 
     return pods_ready, has_image_pull_error, has_terminating_pods, has_unschedulable_pods
 
@@ -784,16 +799,19 @@ async def pod_phase_and_readiness(label_selector: str, namespace: str) -> tuple[
     """Return the phase of the server's pod and whether every container in it is ready.
 
     Terminating pods are skipped, so a restart in progress reports the incoming pod rather than
-    the one on its way out. The phase is ``None`` when no pod matches the selector at all.
+    the one on its way out. Among the rest a ready pod, then a Running one, is preferred: an evicted
+    pod stays ``Failed`` without a deletion timestamp next to its healthy replacement, and must not
+    mask it just because it is listed first. The phase is ``None`` when no pod matches at all.
     """
-    pods = [pod for pod in await list_pods(label_selector, namespace) if pod.metadata.deletion_timestamp is None]
+    pods = _live_pods(await list_pods(label_selector, namespace))
     if not pods:
         return None, False
 
-    pod = pods[0]
-    container_statuses = pod.status.container_statuses or []
-    ready = pod.status.phase == "Running" and bool(container_statuses) and all(c.ready for c in container_statuses)
-    return pod.status.phase, ready
+    pod = next(
+        (pod for pod in pods if _pod_is_ready(pod)),
+        next((pod for pod in pods if pod.status.phase == "Running"), pods[0]),
+    )
+    return pod.status.phase, _pod_is_ready(pod)
 
 
 async def are_any_pods_alive(label_selector: str, namespace: str) -> bool:
