@@ -3,6 +3,7 @@ import os
 import shlex
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from idegym.api.tools.bash import BashCommandRequest
@@ -250,18 +251,17 @@ def test_init_prefix_aborts_when_the_integration_cannot_be_read() -> None:
     assert prefixed.endswith(f" ; source {init} ; echo hi")
 
 
-def test_argv_runs_the_script_file_directly_when_no_user_is_requested() -> None:
-    assert bash_executor._process_argv("/tmp/script.sh", None) == [
+def test_argv_runs_the_script_descriptor_directly_when_no_user_is_requested() -> None:
+    assert bash_executor._process_argv(7, None) == [
         bash_executor._BASH,
         "-c",
-        bash_executor._EVAL_SCRIPT_FILE,
+        bash_executor._EVAL_SCRIPT_DESCRIPTOR.format(fd=7),
         "bash",
-        "/tmp/script.sh",
     ]
 
 
 def test_argv_drops_to_a_user_without_re_authenticating() -> None:
-    argv = bash_executor._process_argv("/tmp/script.sh", "devuser")
+    argv = bash_executor._process_argv(7, "devuser")
 
     assert argv == [
         bash_executor._RUNUSER,
@@ -271,46 +271,104 @@ def test_argv_drops_to_a_user_without_re_authenticating() -> None:
         "--",
         bash_executor._BASH,
         "-c",
-        bash_executor._EVAL_SCRIPT_FILE,
+        bash_executor._EVAL_SCRIPT_DESCRIPTOR.format(fd=7),
         "bash",
-        "/tmp/script.sh",
     ]
+
+
+def test_sudo_argv_ends_in_the_same_runuser_argv_on_the_trampolines_descriptor() -> None:
+    """Without root, sudo reaches runuser via a trampoline that reopens the script and env files."""
+    argv = bash_executor._sudo_argv("/tmp/script.sh", "/tmp/env", "devuser")
+
+    assert argv[:3] == [bash_executor._SUDO, "-n", "--"]
+    assert argv[argv.index("/tmp/script.sh") + 1] == "/tmp/env"
+    assert argv[argv.index("/tmp/env") + 1 :] == bash_executor._process_argv(
+        bash_executor._SUDO_SCRIPT_DESCRIPTOR, "devuser"
+    )
 
 
 def test_interpreters_are_absolute_so_a_callers_path_cannot_hide_them() -> None:
     """The child runs with the caller's `env`, so a bare `bash` would be looked up in their PATH."""
     assert os.path.isabs(bash_executor._BASH)
     assert os.path.isabs(bash_executor._RUNUSER)
+    assert os.path.isabs(bash_executor._SUDO)
 
 
 def test_argv_passes_a_hostile_user_name_as_one_argument() -> None:
     """No shell parses this argv, so a name with metacharacters is inert rather than quoted."""
-    argv = bash_executor._process_argv("/tmp/script.sh", "dev; rm -rf /")
+    argv = bash_executor._process_argv(7, "dev; rm -rf /")
 
     assert "dev; rm -rf /" in argv
 
 
-def _written_script(readable_by_other_user: bool) -> tuple[int, str]:
+def _written_script() -> tuple[int, str]:
     descriptor, path = bash_executor._create_script_file()
-    bash_executor._write_script(descriptor, "echo hi", readable_by_other_user=readable_by_other_user)
+    bash_executor._write_script(descriptor, "echo hi")
     return descriptor, path
 
 
-def test_script_file_is_private_unless_another_user_must_read_it() -> None:
-    private = _written_script(readable_by_other_user=False)
-    shared = _written_script(readable_by_other_user=True)
+def test_script_file_stays_private_and_is_rewound_for_the_child() -> None:
+    """The file used to be 0644 whenever `user` was set; the child now reads the descriptor."""
+    descriptor, path = _written_script()
 
     try:
-        assert Path(private[1]).read_text() == "echo hi"
-        assert Path(private[1]).stat().st_mode & 0o777 == 0o600
-        assert Path(shared[1]).stat().st_mode & 0o777 == 0o644
+        assert Path(path).stat().st_mode & 0o777 == 0o600
+        assert os.read(descriptor, 64) == b"echo hi"
     finally:
-        bash_executor._discard_script(*private)
-        bash_executor._discard_script(*shared)
+        bash_executor._discard_script(descriptor, path)
+
+
+def _another_user(monkeypatch, uid: int = 4242) -> str:
+    entry = SimpleNamespace(pw_uid=uid, pw_dir="/home/devuser", pw_shell="/bin/bash")
+    monkeypatch.setattr(bash_executor.pwd, "getpwnam", lambda name: entry)
+    return "devuser"
+
+
+async def test_no_switch_when_the_user_is_the_servers_own(monkeypatch) -> None:
+    """The server image runs as `appuser`; `user="appuser"` must not go through runuser at all."""
+    user = _another_user(monkeypatch, uid=os.geteuid())
+
+    assert await bash_executor.BashExecutor().resolve_user_switch(user) is None
+
+
+async def test_root_switches_with_runuser(monkeypatch) -> None:
+    user = _another_user(monkeypatch)
+    monkeypatch.setattr(bash_executor.os, "geteuid", lambda: 0)
+
+    assert await bash_executor.BashExecutor().resolve_user_switch(user) is bash_executor._UserSwitch.RUNUSER
+
+
+@pytest.mark.parametrize(
+    ("sudo_available", "expected"),
+    [(True, bash_executor._UserSwitch.SUDO), (False, None)],
+)
+async def test_non_root_switches_through_sudo_or_is_rejected(monkeypatch, sudo_available, expected) -> None:
+    """`runuser` as non-root used to fail inside the child, which looked like an ordinary exit 1."""
+    user = _another_user(monkeypatch)
+    monkeypatch.setattr(bash_executor.os, "geteuid", lambda: 1000)
+    executor = bash_executor.BashExecutor()
+    executor._sudo_available = sudo_available
+
+    if expected is None:
+        with pytest.raises(bash_executor.BashExecutorUserSwitchError, match="passwordless sudo"):
+            await executor.resolve_user_switch(user)
+    else:
+        assert await executor.resolve_user_switch(user) is expected
+
+
+async def test_sudo_is_unavailable_when_the_binary_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(bash_executor, "_SUDO", "/nonexistent/sudo")
+
+    assert await bash_executor.BashExecutor()._can_sudo() is False
+
+
+async def test_resolving_an_unknown_user_is_rejected() -> None:
+    with pytest.raises(bash_executor.BashExecutorUnknownUserError, match="No such user"):
+        await bash_executor.BashExecutor().resolve_user_switch("definitely-not-a-user-here")
 
 
 def test_discarding_the_script_twice_is_not_an_error() -> None:
-    descriptor, path = _written_script(readable_by_other_user=False)
+    descriptor, path = _written_script()
 
     bash_executor._discard_script(descriptor, path)
     bash_executor._discard_script(descriptor, path)
@@ -323,19 +381,19 @@ async def test_a_cancelled_write_still_removes_the_script_file(monkeypatch) -> N
     created: list[tuple[int, str]] = []
     started = threading.Event()
     release = threading.Event()
-    create, write = bash_executor._create_script_file, bash_executor._write_script
+    create, write = bash_executor._create_script_file, bash_executor._write_files
 
     def record_create():
         created.append(create())
         return created[-1]
 
-    def slow_write(descriptor, script, readable_by_other_user):
+    def slow_write(*args):
         started.set()
         release.wait(timeout=5)
-        write(descriptor, script, readable_by_other_user)
+        write(*args)
 
     monkeypatch.setattr(bash_executor, "_create_script_file", record_create)
-    monkeypatch.setattr(bash_executor, "_write_script", slow_write)
+    monkeypatch.setattr(bash_executor, "_write_files", slow_write)
     task = asyncio.create_task(bash_executor.BashExecutor().execute_bash_command("true"))
     await asyncio.to_thread(started.wait, 5)
 

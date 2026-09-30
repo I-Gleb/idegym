@@ -30,7 +30,7 @@ Execute a bash script inside the container.
 | `command` | string | — | Bash script to execute |
 | `cwd` | string or null | `null` | Working directory; a relative path resolves against the project directory |
 | `env` | object | `{}` | Environment variables added to the command's environment |
-| `user` | string or null | `null` | Run the command as this user via `runuser` |
+| `user` | string or null | `null` | Run the command as this user; needs a root server or passwordless `sudo` |
 | `timeout` | float | 600.0 | Maximum execution time in seconds |
 | `graceful_termination_timeout` | float | 2.0 | Seconds to wait for graceful process exit before SIGKILL |
 | `max_output_bytes` | integer or null | 1048576 | Maximum retained bytes per stream; `null` retains complete output |
@@ -90,7 +90,7 @@ result = await server.execute_bash(
     "python -m pytest -q",
     cwd="tests",  # relative to the project directory
     env={"PYTHONHASHSEED": "0"},  # merged over the cleaned environment
-    user="devuser",  # requires the server to run as root
+    user="devuser",  # needs a root server, or passwordless sudo as in the server image
 )
 ```
 
@@ -102,8 +102,18 @@ prefer it to an `export` line for anything sensitive.
 A `PATH` in `env` governs the commands your script runs, not how IdeGYM starts it: `bash` itself
 is resolved once against the server's own `PATH`, so `env={"PATH": "/opt/tool/bin"}` is safe.
 
-`user` runs the script through `runuser --preserve-environment`, so it needs the server
-container to be running as root. Without it the command runs as the server's own user.
+`user` runs the script as that user, with the environment described above plus the user's own
+`HOME`, `USER`, `LOGNAME` and `SHELL`. Naming the server's own user is not a switch at all. A
+root server drops privileges with `runuser --preserve-environment`; the server image runs as the
+non-root `appuser` with passwordless sudo, so there the executor goes through `sudo` to reach the
+same `runuser`, restoring the environment sudo would otherwise rewrite (`PATH`, `LD_*`,
+`PYTHONPATH`) and signalling the command's process group through sudo on timeout. A server that
+has neither rejects the request with `400 Bad Request` rather than running anything. An unknown
+user is a `400` too.
+
+The temp file holding the script stays private to the server's user (mode `0600`) even then.
+Bash receives it as a descriptor opened before the privilege drop, so the target user can run
+the script without being able to open the file, and neither can anyone else in the container.
 
 #### Output fidelity
 

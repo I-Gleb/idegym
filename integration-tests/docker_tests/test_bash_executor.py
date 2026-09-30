@@ -1,16 +1,23 @@
 import asyncio
 import contextlib
 import os
+import pwd
 import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Optional
 
 import psutil
 import pytest
 from idegym.backend.utils import bash_executor as bash_executor_module
-from idegym.backend.utils.bash_executor import BashCommandExecutionTimeoutError, BashExecutor
+from idegym.backend.utils.bash_executor import (
+    BashCommandExecutionTimeoutError,
+    BashExecutor,
+    BashExecutorUserSwitchError,
+)
 from structlog.testing import capture_logs
 
 
@@ -62,6 +69,21 @@ def _bash_version() -> tuple[int, ...]:
 # not the executor's; the server image ships 5.2.
 _needs_bash_5_1_error_format = pytest.mark.skipif(
     _bash_version() < (5, 1), reason="bash < 5.1 formats `bash -c` error locations differently"
+)
+
+
+def _uid_of(name: str) -> Optional[int]:
+    try:
+        return pwd.getpwnam(name).pw_uid
+    except KeyError:
+        return None
+
+
+# `devuser` and `appuser` exist only in the docker test image, which mirrors the server image.
+_SWITCH_TARGET = "devuser"
+_needs_switch_target = pytest.mark.skipif(
+    _uid_of(_SWITCH_TARGET) in (None, os.geteuid()),
+    reason="needs the docker test image's devuser, as a different user",
 )
 
 
@@ -267,6 +289,110 @@ class TestBashExecutor:
         )
 
         assert (stdout, exit_code) == ("/nonexistent/bin", 0)
+
+    def test_the_sudo_trampoline_restores_the_environment_and_the_script_descriptor(self, tmp_path):
+        """Run the trampoline without sudo: it must hand on fd 3 and exactly the environment written."""
+        script = tmp_path / "script"
+        script.write_text("from-descriptor")
+        environment_file = tmp_path / "environment"
+        descriptor = os.open(environment_file, os.O_WRONLY | os.O_CREAT, 0o600)
+        environment = {"PYTHONPATH": "/p", "WITH_EQUALS": "a=b", "EMPTY": ""}
+        try:
+            bash_executor_module._write_environment(descriptor, environment)
+        finally:
+            os.close(descriptor)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-S",
+                "-c",
+                bash_executor_module._SUDO_TRAMPOLINE,
+                str(script),
+                str(environment_file),
+                bash_executor_module._BASH,
+                "-c",
+                'IFS= read -r -d "" -u 3 body; printf "%s|%s|%s|%s|%s" "$body" "$PYTHONPATH" "$WITH_EQUALS" "${EMPTY-unset}" "${UNRELATED-gone}"',
+            ],
+            capture_output=True,
+            text=True,
+            env={"UNRELATED": "dropped"},
+        )
+
+        assert result.stdout == "from-descriptor|/p|a=b||gone"
+
+    @_needs_switch_target
+    @pytest.mark.asyncio
+    async def test_a_user_switch_keeps_the_script_private_and_the_environment_intact(self):
+        """Run as root this goes through runuser, run as `appuser` through the sudo trampoline.
+
+        The script used to be made world-readable for the target user, and sudo would rewrite
+        PATH and drop LD_*/PYTHONPATH; neither may be visible here.
+        """
+        executor = BashExecutor()
+        glob = shlex.quote(tempfile.gettempdir()) + "/idegym-bash-*"
+        script = (
+            'id -un; printf "%s\\n" "$HOME" "$PATH" "$PYTHONPATH" "$LD_LIBRARY_PATH"\n'
+            f'for f in {glob}; do [ -r "$f" ] && echo "readable: $f"; done; true'
+        )
+
+        stdout, stderr, exit_code = await executor.execute_bash_command(
+            script,
+            user=_SWITCH_TARGET,
+            env={"PATH": "/custom/bin:/usr/bin:/bin", "PYTHONPATH": "/p", "LD_LIBRARY_PATH": "/l"},
+        )
+
+        assert (stdout, stderr, exit_code) == (
+            f"{_SWITCH_TARGET}\n/home/{_SWITCH_TARGET}\n/custom/bin:/usr/bin:/bin\n/p\n/l\n",
+            "",
+            0,
+        )
+
+    @_needs_switch_target
+    @pytest.mark.asyncio
+    async def test_a_timeout_under_a_user_switch_still_returns(self):
+        """Under sudo the server may not signal the target user's processes; none may survive."""
+        executor = BashExecutor()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+
+        with pytest.raises(BashCommandExecutionTimeoutError):
+            await executor.execute_bash_command(
+                "sleep 31 & sleep 31", user=_SWITCH_TARGET, timeout=0.5, graceful_termination_timeout=0.5
+            )
+
+        assert loop.time() - started < 10
+        deadline = loop.time() + 2
+        while survivors := [
+            process.pid
+            for process in psutil.process_iter(["username", "cmdline"])
+            if process.info["username"] == _SWITCH_TARGET and process.info["cmdline"] == ["sleep", "31"]
+        ]:
+            assert loop.time() < deadline, f"processes outlived the timeout: {survivors}"
+            await asyncio.sleep(0.05)
+
+    @pytest.mark.skipif(
+        pwd.getpwuid(os.geteuid()).pw_name != _SWITCH_TARGET,
+        reason="needs to run as the docker test image's devuser, which is neither root nor a sudoer",
+    )
+    @pytest.mark.asyncio
+    async def test_a_user_switch_without_root_or_sudo_is_rejected(self):
+        """runuser as non-root used to fail inside the child and come back as an ordinary exit 1."""
+        executor = BashExecutor()
+
+        with pytest.raises(BashExecutorUserSwitchError, match="passwordless sudo"):
+            await executor.execute_bash_command("true", user="appuser")
+
+    @pytest.mark.asyncio
+    async def test_the_servers_own_user_needs_no_switch(self):
+        """The server image runs as appuser, so `user="appuser"` must work without root or sudo."""
+        executor = BashExecutor()
+        own_user = pwd.getpwuid(os.geteuid()).pw_name
+
+        stdout, _stderr, exit_code = await executor.execute_bash_command("id -un", user=own_user, strip_output=True)
+
+        assert (stdout, exit_code) == (own_user, 0)
 
     @pytest.mark.asyncio
     async def test_a_script_far_larger_than_the_argument_limit_runs(self):

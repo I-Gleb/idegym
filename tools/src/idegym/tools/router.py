@@ -24,6 +24,7 @@ from idegym.api.tools.file import (
 )
 from idegym.backend.utils.bash_executor import (
     BashExecutorUnknownUserError,
+    BashExecutorUserSwitchError,
     BashExecutorWorkingDirectoryError,
 )
 from idegym.tools.tool_service import FileToolActionName, ToolName, ToolService
@@ -56,7 +57,7 @@ async def execute_bash_script(
             },
         )
     # `cwd` and `user` are caller-supplied, so a bad value is a bad request, not a server fault.
-    except (BashExecutorWorkingDirectoryError, BashExecutorUnknownUserError) as ex:
+    except (BashExecutorWorkingDirectoryError, BashExecutorUnknownUserError, BashExecutorUserSwitchError) as ex:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ex)) from ex
 
     return BashCommandResponse(stdout=stdout, stderr=stderr, exit_code=exit_code)

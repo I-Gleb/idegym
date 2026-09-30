@@ -27,8 +27,8 @@ class BashCommandRequest(BaseModel):
     user: Optional[str] = Field(
         default=None,
         description=(
-            "Run the command as this user via 'runuser'. Requires the server to run as root; "
-            "leave unset to run as the server's own user."
+            "Run the command as this user. Needs the server to run as root or to have passwordless "
+            "sudo, as the server image does; leave unset to run as the server's own user."
         ),
         examples=["devuser"],
     )
