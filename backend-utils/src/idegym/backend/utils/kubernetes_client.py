@@ -535,6 +535,11 @@ def _pod_is_ready(pod: V1Pod) -> bool:
     return pod.status.phase == "Running" and bool(container_statuses) and all(c.ready for c in container_statuses)
 
 
+# How long the timeout diagnostic may spend asking Kubernetes. It runs after a wait has already
+# expired, often because the API server itself is struggling, so it must not add a second hang.
+_DIAGNOSIS_TIMEOUT_SECONDS = 10
+
+
 async def describe_pod_startup(label_selector: str, namespace: str) -> str:
     """Say what the pods are actually doing, so a readiness timeout is not an unattributable one.
 
@@ -544,37 +549,83 @@ async def describe_pod_startup(label_selector: str, namespace: str) -> str:
     container that is not ready is a readiness probe that has not passed.
     """
     try:
-        pods = _live_pods(await list_pods(label_selector, namespace))
+        async with timeout(_DIAGNOSIS_TIMEOUT_SECONDS):
+            listed = await list_pods(label_selector, namespace)
     except Exception as error:  # noqa: BLE001  # a diagnostic must never replace the real failure
-        return f"pod state unavailable: {error}"
+        return f"pod state unavailable: {str(error) or type(error).__name__}"
 
+    pods = _live_pods(listed)
     if not pods:
         return "no pods matched"
 
     # With several replicas, or an old and a new pod overlapping during a rollout, the pod holding
     # the wait up is the one worth describing, not whichever the API happened to list first.
     not_ready = [pod for pod in pods if not _pod_is_ready(pod)]
-    diagnosis = _describe_pod(not_ready[0] if not_ready else pods[0])
+    if not_ready:
+        diagnosis = _describe_pod(not_ready[0])
+    elif terminating := len(listed) - len(pods):
+        # A RESTART reuse whose old pod is slow to terminate: the new one is fine, and blaming its
+        # readiness probe would send the reader after the wrong problem.
+        diagnosis = f"new pod ready, waiting for {terminating} old pod(s) to terminate"
+    else:
+        diagnosis = "all pods ready"
     if len(pods) > 1:
         return f"{len(pods) - len(not_ready)}/{len(pods)} pods ready; {diagnosis}"
     return diagnosis
 
 
+def _waiting_reason(container: Any) -> Optional[str]:
+    state = container.state
+    return state.waiting.reason if state and state.waiting and state.waiting.reason else None
+
+
+def _describe_init_containers(pod: V1Pod) -> Optional[str]:
+    """The first init container still holding the pod back, or ``None`` when none is.
+
+    Until every init container has completed, the main containers wait with ``PodInitializing``,
+    which on its own reads as a pull in progress. An init container that is crash-looping or has
+    failed never gets there, and raising the timeout will not help, so it has to be named.
+    """
+    for container in pod.status.init_container_statuses or []:
+        state = container.state
+        terminated = state.terminated if state else None
+        if container.ready or (terminated and terminated.exit_code == 0):
+            continue
+        reason = _waiting_reason(container)
+        if reason in _PULL_FAILED_REASONS:
+            return f"the image of init container '{container.name}' could not be pulled ({reason})"
+        if reason in _PULL_IN_PROGRESS_REASONS:
+            return f"still pulling the image or creating init container '{container.name}' ({reason})"
+        if reason:
+            return f"init container '{container.name}' waiting ({reason})"
+        if terminated:
+            return (
+                f"init container '{container.name}' failed "
+                f"(exit code {terminated.exit_code}{f', {terminated.reason}' if terminated.reason else ''})"
+            )
+        if state and state.running:
+            return f"init container '{container.name}' still running"
+    return None
+
+
 def _describe_pod(pod: V1Pod) -> str:
-    """What a single pod is doing, in the terms ``describe_pod_startup`` reports."""
-    waiting = {
-        container.state.waiting.reason
-        for container in (pod.status.container_statuses or [])
-        if container.state and container.state.waiting and container.state.waiting.reason
-    }
+    """What a single pod that is not ready is doing, in the terms ``describe_pod_startup`` reports."""
+    if init_diagnosis := _describe_init_containers(pod):
+        return init_diagnosis
+    container_statuses = pod.status.container_statuses or []
+    waiting = {reason for container in container_statuses if (reason := _waiting_reason(container))}
     if waiting & _PULL_FAILED_REASONS:
         return f"the image could not be pulled ({', '.join(sorted(waiting))})"
     if waiting & _PULL_IN_PROGRESS_REASONS:
         return f"still pulling the image or creating the container ({', '.join(sorted(waiting))})"
     if waiting:
         return f"phase {pod.status.phase}, container waiting ({', '.join(sorted(waiting))})"
-    if pod.status.phase == "Running":
-        return "image pulled and container running, but its readiness probe has not passed"
+    unready = sorted(container.name for container in container_statuses if not container.ready)
+    if pod.status.phase == "Running" and unready:
+        return (
+            f"image pulled and container running, but its readiness probe has not passed "
+            f"(not ready: {', '.join(unready)})"
+        )
     return f"phase {pod.status.phase}"
 
 

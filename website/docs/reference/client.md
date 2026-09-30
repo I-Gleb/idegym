@@ -164,8 +164,12 @@ Pods with label 'app=srv-abc' were not ready within 300s
 ```
 
 The distinctions it draws are: still pulling or creating the container, the image could not be
-pulled, the container is running but its readiness probe has not passed, and no pod matched at
-all. Only the third points at the image's health endpoint.
+pulled, an init container that is still running or has failed (named, since the main container
+then waits with `PodInitializing`, which alone looks like a pull), the container is running but
+its readiness probe has not passed, a new pod that is ready but waiting for an old one to
+terminate, and no pod matched at all. Only the readiness probe case points at the image's health
+endpoint. With several pods it describes the first one that is not ready, prefixed with how many
+are (`1/2 pods ready; ...`).
 
 Scheduling has its own budgets, separate from this timeout; see
 [Clusters with slow node provisioning](remote_deployment.md#clusters-with-slow-node-provisioning).
