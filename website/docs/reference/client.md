@@ -505,13 +505,18 @@ if not status.usable:
 | `created_at` / `last_activity_at` | `int` | Epoch milliseconds |
 | `idle_seconds` | `float` | Seconds since the last recorded activity |
 | `keepalive_until` | `int \| None` | Epoch milliseconds until which an explicit keepalive holds the server |
-| `pod_phase` | `str \| None` | Kubernetes phase, or `None` when no pod matches |
-| `pod_ready` | `bool` | True when the pod is `Running` with all containers ready |
+| `pod_phase` | `str \| None` | Kubernetes phase, or `None` when no pod matches or the pod was not checked |
+| `pod_ready` | `bool \| None` | True when the pod is `Running` with all containers ready; `None` when the pod was not checked |
 | `details` | `str \| None` | Failure reason recorded on a terminal status |
 
 Use this rather than an unrelated call such as `list_capabilities` as a liveness probe. It
 answers for a finished, stopped or crashed server instead of raising, and reading it does not
 count as activity — so a polling loop will not keep a server from being reaped.
+
+The pod fields are best-effort: they are `None` for a server in a terminal state, which is not
+looked up in Kubernetes, and when the Kubernetes lookup fails. The rest of the response still
+comes from the orchestrator's record, so check `usable` and `availability` rather than
+`pod_ready` to decide whether the server is gone.
 
 ### `restart_server(...)`
 

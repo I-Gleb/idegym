@@ -266,9 +266,25 @@ async def get_server_status(server_id: int, client_id: UUID) -> ServerStatusResp
     ``/capabilities``, which happens to touch both the database record and the pod. This reads
     the record and the pod phase directly, and deliberately does not update the server's
     activity timestamp, so polling it cannot keep a server from being reaped.
+
+    The record is the answer and the pod view is a best-effort addition to it. A terminal server
+    has no pod worth asking about, so Kubernetes is not called for one, and a Kubernetes failure
+    (an API timeout, missing RBAC, a deleted namespace) leaves the pod fields null rather than
+    hiding the recorded availability and failure reason behind a 500.
     """
     server = await get_owned_server(client_id=client_id, server_id=server_id)
-    pod_phase, pod_ready = await pod_phase_and_readiness(f"app={server.generated_name}", server.namespace)
+    pod_phase, pod_ready = None, None
+    if not AvailabilityStatus(server.availability).is_terminal:
+        try:
+            pod_phase, pod_ready = await pod_phase_and_readiness(f"app={server.generated_name}", server.namespace)
+        except Exception as error:  # noqa: BLE001  # the pod view is optional; the DB record still answers
+            logger.warning(
+                "Could not read the server pod for its status",
+                server=server.generated_name,
+                server_id=server.id,
+                namespace=server.namespace,
+                error=str(error),
+            )
     now = current_time_millis()
     return ServerStatusResponse(
         **_server_summary_fields(server),

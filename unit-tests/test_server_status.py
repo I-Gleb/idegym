@@ -105,14 +105,50 @@ def test_status_response_is_the_list_row_plus_the_pod_view() -> None:
 
 async def test_a_crashed_server_reports_its_reason_instead_of_raising(stub_orchestrator) -> None:
     """`validate_server` would 410 here; a status endpoint has to answer."""
-    stub_orchestrator(_record(availability=AvailabilityStatus.CRASHED, details="OOMKilled"), pod=(None, False))
+    _, pods = stub_orchestrator(_record(availability=AvailabilityStatus.CRASHED, details="OOMKilled"))
 
     status = await server_router.get_server_status(server_id=7, client_id=uuid4())
 
     assert status.availability == AvailabilityStatus.CRASHED
     assert status.details == "OOMKilled"
-    assert status.pod_phase is None
-    assert status.pod_ready is False
+    assert (status.pod_phase, status.pod_ready) == (None, None)
+    pods.assert_not_awaited()
+
+
+async def test_a_live_server_without_a_pod_reports_it_not_ready(stub_orchestrator) -> None:
+    stub_orchestrator(_record(), pod=(None, False))
+
+    status = await server_router.get_server_status(server_id=7, client_id=uuid4())
+
+    assert (status.pod_phase, status.pod_ready) == (None, False)
+
+
+@pytest.mark.parametrize(
+    "availability",
+    [status for status in AvailabilityStatus if status.is_terminal],
+)
+async def test_a_terminal_server_is_not_looked_up_in_kubernetes(stub_orchestrator, availability) -> None:
+    _, pods = stub_orchestrator(_record(availability=availability))
+
+    status = await server_router.get_server_status(server_id=7, client_id=uuid4())
+
+    pods.assert_not_awaited()
+    assert status.availability == availability
+    assert status.pod_ready is None
+
+
+@pytest.mark.parametrize("error", [TimeoutError("list_pods timed out"), RuntimeError("403 Forbidden")])
+async def test_a_kubernetes_failure_still_reports_the_record(stub_orchestrator, mocker, error) -> None:
+    """RBAC, an API timeout or a deleted namespace must not hide the recorded availability."""
+    stub_orchestrator(_record(availability=AvailabilityStatus.FINISHED, details="handed back"))
+    mocker.patch.object(server_router, "pod_phase_and_readiness", mocker.AsyncMock(side_effect=error))
+    warning = mocker.patch.object(server_router.logger, "warning")
+
+    status = await server_router.get_server_status(server_id=7, client_id=uuid4())
+
+    assert (status.availability, status.details) == (AvailabilityStatus.FINISHED, "handed back")
+    assert (status.pod_phase, status.pod_ready) == (None, None)
+    assert warning.call_args.kwargs["server"] == "my-server-abc123"
 
 
 async def test_reading_status_does_not_record_activity(stub_orchestrator, mocker) -> None:

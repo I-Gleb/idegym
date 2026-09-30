@@ -346,9 +346,19 @@ class ServerStatusResponse(ServerSummary):
 
     idle_seconds: float = Field(description="Seconds since 'last_activity_at'", ge=0)
     pod_phase: Optional[str] = Field(
-        default=None, description="Kubernetes phase of the server pod, or null when no pod matches"
+        default=None,
+        description=(
+            "Kubernetes phase of the server pod, or null when no pod matches, the server is terminal, "
+            "or Kubernetes could not be reached"
+        ),
     )
-    pod_ready: bool = Field(default=False, description="True when the pod is Running with all containers ready")
+    pod_ready: Optional[bool] = Field(
+        default=None,
+        description=(
+            "True when the pod is Running with all containers ready, or null when the pod was not "
+            "checked: the server is terminal, or Kubernetes could not be reached"
+        ),
+    )
 
 
 class AliveServerInfo(BaseModel):
