@@ -477,6 +477,8 @@ Calling again extends the window and never shortens it, so two holders of the sa
 cannot cut each other short — which also means `keepalive(minutes=1)` after
 `keepalive(minutes=60)` leaves the longer hold in place, and the response reports the window
 actually in effect rather than the one you asked for. The maximum window is 24 hours.
+The hold belongs to the client that took it: when a finished server is handed to another client
+for reuse, the hold is cleared, so the new owner starts without one.
 
 A hold on a server that has already reached a terminal state is refused with `410 Gone`, which
 the client raises as `IdeGYMNotFoundError`: keepalive keeps a live server alive, it does not

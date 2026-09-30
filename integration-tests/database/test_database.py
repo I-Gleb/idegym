@@ -412,6 +412,21 @@ async def test_update_idegym_server_owner(db: AsyncSession):
     assert updated.client_id == new_owner.id
 
 
+async def test_update_idegym_server_owner_drops_the_previous_owners_keepalive(db: AsyncSession):
+    """A reusing client must not inherit a hold it never asked for."""
+    old_owner = await _make_client(db, "old-owner")
+    new_owner = await _make_client(db, "new-owner")
+    server = await _make_server(db, old_owner, availability=AvailabilityStatus.FINISHED)
+    server.keepalive_until = server.created_at + 24 * 60 * 60 * 1000
+    await db.commit()
+
+    await update_idegym_server_owner(db, server.id, new_owner.id)
+
+    await db.refresh(server)
+    assert server.client_id == new_owner.id
+    assert server.keepalive_until is None
+
+
 async def test_update_idegym_server_owner_returns_none_for_unknown(db: AsyncSession):
     client = await _make_client(db)
     assert await update_idegym_server_owner(db, 99999, client.id) is None

@@ -553,11 +553,17 @@ async def subtract_resources_from_rule(
 
 
 async def update_idegym_server_owner(db: AsyncSession, server_id: int, client_id: UUID) -> Optional[IdeGYMServer]:
+    """Hand a reused server to a new client.
+
+    The keepalive hold is cleared with the handover: it was the previous owner saying it still
+    needed the server, and a new owner that never asked for a hold must not inherit one.
+    """
     server = await get_idegym_server(db, server_id)
     if not server:
         return None
 
     server.client_id = client_id
+    server.keepalive_until = None
     await db.commit()
     return server
 
