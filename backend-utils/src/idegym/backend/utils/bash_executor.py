@@ -4,6 +4,7 @@ import os
 import pwd
 import re
 import shlex
+import shutil
 import signal
 import tempfile
 from asyncio.subprocess import Process
@@ -27,6 +28,11 @@ _PROCESS_REAP_TIMEOUT_SECONDS = 0.25
 _EXPORT_ASSIGNMENT_PATTERN = re.compile(
     r"""\bexport[ \t]+(?P<name>[A-Za-z_][A-Za-z0-9_]*)=(?:'[^']*'|"[^"]*"|[^\s;&|)]*)"""
 )
+# Resolved once, against the server's own PATH: the child is spawned with the caller's `env`,
+# so a bare name would be looked up in a PATH the caller chose — `env={"PATH": "/opt/tool/bin"}`
+# then failed with FileNotFoundError, which surfaced as a 404 rather than anything actionable.
+_BASH = shutil.which("bash") or "/bin/bash"
+_RUNUSER = shutil.which("runuser") or "/usr/sbin/runuser"
 
 
 class BashExecutorError(Exception):
@@ -239,10 +245,10 @@ def _process_argv(script_path: str, user: Optional[str]) -> list[str]:
     ``runuser`` is used rather than ``su`` because it does not authenticate and keeps the
     caller's environment, which is what the ``env`` argument has already been merged into.
     """
-    invocation = ["bash", script_path]
+    invocation = [_BASH, script_path]
     if user is None:
         return invocation
-    return ["runuser", "--preserve-environment", "-u", user, "--", *invocation]
+    return [_RUNUSER, "--preserve-environment", "-u", user, "--", *invocation]
 
 
 def _write_script(script: str, readable_by_other_user: bool) -> str:

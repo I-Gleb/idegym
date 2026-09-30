@@ -250,13 +250,27 @@ def test_init_prefix_aborts_when_the_integration_cannot_be_read() -> None:
 
 
 def test_argv_runs_the_script_file_directly_when_no_user_is_requested() -> None:
-    assert bash_executor._process_argv("/tmp/script.sh", None) == ["bash", "/tmp/script.sh"]
+    assert bash_executor._process_argv("/tmp/script.sh", None) == [bash_executor._BASH, "/tmp/script.sh"]
 
 
 def test_argv_drops_to_a_user_without_re_authenticating() -> None:
     argv = bash_executor._process_argv("/tmp/script.sh", "devuser")
 
-    assert argv == ["runuser", "--preserve-environment", "-u", "devuser", "--", "bash", "/tmp/script.sh"]
+    assert argv == [
+        bash_executor._RUNUSER,
+        "--preserve-environment",
+        "-u",
+        "devuser",
+        "--",
+        bash_executor._BASH,
+        "/tmp/script.sh",
+    ]
+
+
+def test_interpreters_are_absolute_so_a_callers_path_cannot_hide_them() -> None:
+    """The child runs with the caller's `env`, so a bare `bash` would be looked up in their PATH."""
+    assert os.path.isabs(bash_executor._BASH)
+    assert os.path.isabs(bash_executor._RUNUSER)
 
 
 def test_argv_passes_a_hostile_user_name_as_one_argument() -> None:

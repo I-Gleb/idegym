@@ -53,3 +53,6 @@ class TestBashExecutorInDocker:
 
     def test_a_bashrc_ending_in_a_failing_command_does_not_abort_the_script_in_docker(self):
         self._run_test("test_a_bashrc_ending_in_a_failing_command_does_not_abort_the_script")
+
+    def test_a_callers_path_does_not_affect_finding_bash_in_docker(self):
+        self._run_test("test_a_callers_path_does_not_affect_finding_bash")

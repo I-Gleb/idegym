@@ -93,6 +93,9 @@ stripped; `env` is merged over it, so a name that already exists is overridden. 
 this way never enter the command text, which means they are not written to the command log —
 prefer it to an `export` line for anything sensitive.
 
+A `PATH` in `env` governs the commands your script runs, not how IdeGYM starts it: `bash` itself
+is resolved once against the server's own `PATH`, so `env={"PATH": "/opt/tool/bin"}` is safe.
+
 `user` runs the script through `runuser --preserve-environment`, so it needs the server
 container to be running as root. Without it the command runs as the server's own user.
 

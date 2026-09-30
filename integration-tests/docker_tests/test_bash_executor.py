@@ -219,6 +219,17 @@ class TestBashExecutor:
         assert stdout == "overridden"
 
     @pytest.mark.asyncio
+    async def test_a_callers_path_does_not_affect_finding_bash(self, tmp_path):
+        """`bash` used to be resolved in the caller's PATH, so this failed as a FileNotFoundError."""
+        executor = BashExecutor()
+
+        stdout, _stderr, exit_code = await executor.execute_bash_command(
+            'printf "%s" "$PATH"', env={"PATH": "/nonexistent/bin", "HOME": str(tmp_path)}
+        )
+
+        assert (stdout, exit_code) == ("/nonexistent/bin", 0)
+
+    @pytest.mark.asyncio
     async def test_a_script_far_larger_than_the_argument_limit_runs(self):
         """MAX_ARG_STRLEN is 128 KiB; this script is well past it and used to fail with E2BIG."""
         executor = BashExecutor()
