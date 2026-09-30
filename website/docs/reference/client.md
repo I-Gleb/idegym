@@ -365,12 +365,16 @@ It takes the same arguments as `IdeGYMClient` and registers on entry, exactly as
 
 | Method | Description |
 |--------|-------------|
-| `run(call, timeout=None)` | Run `call(client)` on the owned loop and return its result |
+| `run(call, timeout=None)` | Run `call(client)` on the owned loop and return its result; on timeout the call is cancelled, then `TimeoutError` is raised |
 | `submit(call)` | Schedule `call(client)` and return a `concurrent.futures.Future` |
 | `client` | The underlying `IdeGYMClient`; only touch it from inside a `call` |
 
 `call` takes the client and returns an awaitable, rather than being an awaitable itself, so the
 awaitable is created on the owning loop — nothing ever binds to the caller's.
+
+On exit, work still in flight gets a few seconds to finish, and is then cancelled — so a thread
+still waiting on a `submit` future is released with `CancelledError` rather than left blocked.
+Once exit has begun, new `run` and `submit` calls raise `RuntimeError`.
 
 ---
 
