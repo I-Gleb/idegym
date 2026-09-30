@@ -23,7 +23,6 @@ from idegym.client.exceptions import (
     IdeGYMSandboxError,
     IdeGYMServerError,
     IdeGYMTimeoutError,
-    error_class_for_status,
     http_error,
 )
 from idegym.client.operations.forwarding import ForwardingOperations
@@ -57,7 +56,7 @@ def _utils(handler) -> HTTPUtils:
     ],
 )
 def test_status_code_selects_the_exception_type(status_code, expected) -> None:
-    assert error_class_for_status(status_code) is expected
+    assert type(http_error("failed", status_code=status_code)) is expected
 
 
 def test_every_typed_error_stays_catchable_as_before() -> None:

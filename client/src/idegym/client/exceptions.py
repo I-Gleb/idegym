@@ -117,7 +117,7 @@ _ERROR_BY_STATUS: dict[int, type[IdeGYMHTTPError]] = {
 }
 
 
-def error_class_for_status(status_code: Optional[int]) -> type[IdeGYMHTTPError]:
+def _error_class_for_status(status_code: Optional[int]) -> type[IdeGYMHTTPError]:
     """Pick the exception type for a status code, falling back by class of status."""
     if status_code is None:
         return IdeGYMHTTPError
@@ -139,7 +139,7 @@ def http_error(
     url: Optional[str] = None,
 ) -> IdeGYMHTTPError:
     """Build the most specific exception for ``status_code``, ready to raise."""
-    return error_class_for_status(status_code)(message, status_code=status_code, body=body, method=method, url=url)
+    return _error_class_for_status(status_code)(message, status_code=status_code, body=body, method=method, url=url)
 
 
 def raise_for_error_response[T](response: T | ErrorResponse, operation: str) -> T:
