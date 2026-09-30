@@ -410,8 +410,9 @@ User-facing docs live in [`website/docs/`](website/docs/) and are published to G
 - The OpenAPI schemas behind the [API](website/docs/api.mdx) page are committed files under
   `website/static/openapi/`, and nothing regenerates them — not the docs build, not CI. A change
   to a router or a request/response model leaves them stale until you run
-  `uv run --frozen python website/scripts/gen_openapi.py website/static/openapi` and commit the
-  result.
+  `PYTHONHASHSEED=0 uv run --frozen python website/scripts/gen_openapi.py website/static/openapi`
+  and commit the result. Pin the seed: the multi-method forward route stores its methods in a set,
+  so without it the method order and its `operationId` change from run to run.
 - `website/docs/reference/` is the developer reference documentation; `architecture/`,
   `overview/`, and `deployment.md` are the presentation layer. **Feature PRs tend to update
   only `reference/` and leave the presentation pages stale** — if your change alters

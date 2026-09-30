@@ -551,225 +551,9 @@
       }
     },
     "/api/forward/{client_id}/{server_id}/{path}": {
-      "put": {
-        "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
-        "parameters": [
-          {
-            "name": "client_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Client Id"
-            }
-          },
-          {
-            "name": "server_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Server Id"
-            }
-          },
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
       "get": {
         "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
-        "parameters": [
-          {
-            "name": "client_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Client Id"
-            }
-          },
-          {
-            "name": "server_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Server Id"
-            }
-          },
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "options": {
-        "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
-        "parameters": [
-          {
-            "name": "client_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Client Id"
-            }
-          },
-          {
-            "name": "server_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Server Id"
-            }
-          },
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "head": {
-        "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
-        "parameters": [
-          {
-            "name": "client_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid",
-              "title": "Client Id"
-            }
-          },
-          {
-            "name": "server_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "title": "Server Id"
-            }
-          },
-          {
-            "name": "path",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Path"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
         "parameters": [
           {
             "name": "client_id",
@@ -823,7 +607,115 @@
       },
       "delete": {
         "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Client Id"
+            }
+          },
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Server Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Forward Request By Server Id",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Client Id"
+            }
+          },
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Server Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "summary": "Forward Request By Server Id",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
         "parameters": [
           {
             "name": "client_id",
@@ -877,7 +769,115 @@
       },
       "post": {
         "summary": "Forward Request By Server Id",
-        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__put",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Client Id"
+            }
+          },
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Server Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "summary": "Forward Request By Server Id",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Client Id"
+            }
+          },
+          {
+            "name": "server_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Server Id"
+            }
+          },
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Path"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "options": {
+        "summary": "Forward Request By Server Id",
+        "operationId": "forward_request_by_server_id_api_forward__client_id___server_id___path__get",
         "parameters": [
           {
             "name": "client_id",
