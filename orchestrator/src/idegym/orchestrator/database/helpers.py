@@ -24,6 +24,7 @@ from idegym.orchestrator.database.database import (
     get_snapshot_prepare_request_with_results,
     increment_snapshot_prepare_failed,
     increment_snapshot_prepare_succeeded,
+    list_idegym_servers_by_client_id,
     need_to_release_nodes,
     need_to_spin_up_nodes,
     save_async_operation,
@@ -224,11 +225,13 @@ async def find_matching_finished_server_in_db(
 
 @with_db_session
 async def list_client_servers(db: AsyncSession, client_id: UUID, include_terminal: bool):
-    """Return every server owned by a client, newest first, optionally including dead ones."""
-    servers = await get_idegym_servers_by_client_id(db, client_id)
-    if not include_terminal:
-        servers = [server for server in servers if not AvailabilityStatus(server.availability).is_terminal]
-    return sorted(servers, key=lambda server: server.created_at or 0, reverse=True)
+    """Return every server owned by a client, newest first, optionally including dead ones.
+
+    An unknown client is a 404 rather than an empty list, checked in the same session as the query.
+    """
+    if not await get_client(db, client_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Client with ID {client_id} not found")
+    return await list_idegym_servers_by_client_id(db, client_id, include_terminal=include_terminal)
 
 
 @with_db_session

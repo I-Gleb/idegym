@@ -198,7 +198,6 @@ async def list_servers(client_id: UUID, include_terminal: bool = False) -> ListS
     Terminal servers are excluded unless asked for, since the common question is "what is still
     mine and running".
     """
-    await validate_client(client_id)
     servers = await list_client_servers(client_id=client_id, include_terminal=include_terminal)
     return ListServersResponse(
         client_id=client_id,

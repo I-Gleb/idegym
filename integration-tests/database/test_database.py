@@ -35,6 +35,7 @@ from idegym.orchestrator.database.database import (
     get_job_status_by_id,
     get_resource_limit_rule,
     get_running_idegym_servers,
+    list_idegym_servers_by_client_id,
     mark_stale_async_operations_as_finished,
     need_to_release_nodes,
     need_to_spin_up_nodes,
@@ -316,6 +317,25 @@ async def test_get_idegym_servers_by_client_id(db: AsyncSession):
     assert s1.id in server_ids
     assert s2.id in server_ids
     assert len(servers) == 2
+
+
+async def test_list_idegym_servers_by_client_id_filters_and_orders_in_sql(db: AsyncSession):
+    owner = await _make_client(db, "owner")
+    other = await _make_client(db, "other")
+    oldest = await _make_server(db, owner, "oldest")
+    killed = await _make_server(db, owner, "killed", availability=AvailabilityStatus.KILLED)
+    finished = await _make_server(db, owner, "finished", availability=AvailabilityStatus.FINISHED)
+    await _make_server(db, other, "foreign")
+    for age, server in enumerate([finished, killed, oldest]):
+        server.created_at = 1_000_000 - age * 1000
+    await db.commit()
+
+    live = await list_idegym_servers_by_client_id(db, owner.id, include_terminal=False)
+    everything = await list_idegym_servers_by_client_id(db, owner.id, include_terminal=True)
+
+    # FINISHED is not terminal: it can still be reused, so it stays in the default view.
+    assert [s.id for s in live] == [finished.id, oldest.id]
+    assert [s.id for s in everything] == [finished.id, killed.id, oldest.id]
 
 
 async def test_get_running_idegym_servers(db: AsyncSession):

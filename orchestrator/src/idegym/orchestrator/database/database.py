@@ -290,6 +290,24 @@ async def get_idegym_servers_by_client_id(db: AsyncSession, client_id: UUID) -> 
     return result.scalars().all()
 
 
+async def list_idegym_servers_by_client_id(
+    db: AsyncSession, client_id: UUID, include_terminal: bool
+) -> list[IdeGYMServer]:
+    """Return a client's servers newest first, leaving out terminal ones unless asked.
+
+    Filtering and ordering happen in SQL because a long-lived client accumulates every server it
+    has ever owned, and the common question is only which of them are still running.
+    """
+    query = select(IdeGYMServer).filter(IdeGYMServer.client_id == client_id)
+    if not include_terminal:
+        query = query.filter(
+            IdeGYMServer.availability.not_in([status for status in AvailabilityStatus if status.is_terminal])
+        )
+    query = query.order_by(IdeGYMServer.created_at.desc().nulls_last(), IdeGYMServer.id.desc())
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
 async def get_running_idegym_servers(db: AsyncSession) -> list[IdeGYMServer]:
     query = select(IdeGYMServer).filter(
         IdeGYMServer.availability.in_([AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED])
