@@ -471,23 +471,35 @@ async def save_idegym_server(
     return server
 
 
-async def extend_idegym_server_keepalive(db: AsyncSession, server_id: int, until: int) -> Optional[IdeGYMServer]:
-    """Hold a server against the inactivity reaper until ``until`` epoch millis.
+async def extend_idegym_server_keepalive(
+    db: AsyncSession, server_id: int, client_id: UUID, until: int
+) -> Optional[IdeGYMServer]:
+    """Hold a client's own live server against the inactivity reaper until ``until`` epoch millis.
 
     The window is only ever extended, never shortened, so two callers holding the same server
-    cannot cut each other's hold short. A terminal server is returned untouched: reviving one
-    by keepalive would contradict whatever put it in that state.
+    cannot cut each other's hold short. That has to be one statement: a read followed by a write
+    lets a shorter request that read the old value commit last and overwrite a longer one. The
+    ``UPDATE`` takes the row lock, and under ``READ COMMITTED`` a blocked update re-evaluates
+    ``GREATEST`` against the row the other transaction committed.
+
+    Returns ``None`` when nothing matched: the server is missing, belongs to another client, or is
+    terminal. A terminal server is never extended, since reviving one by keepalive would
+    contradict whatever put it in that state; the caller tells those cases apart.
     """
-    server = await get_idegym_server(db, server_id)
-    if not server:
-        return None
-
-    if AvailabilityStatus(server.availability).is_terminal:
-        return server
-
-    server.keepalive_until = max(server.keepalive_until or 0, until)
+    query = (
+        update(IdeGYMServer)
+        .where(
+            IdeGYMServer.id == server_id,
+            IdeGYMServer.client_id == client_id,
+            IdeGYMServer.availability.not_in([status for status in AvailabilityStatus if status.is_terminal]),
+        )
+        .values(keepalive_until=func.greatest(func.coalesce(IdeGYMServer.keepalive_until, 0), until))
+        .returning(IdeGYMServer)
+        .execution_options(synchronize_session="fetch")
+    )
+    result = await db.execute(query)
+    server = result.scalar_one_or_none()
     await db.commit()
-    await db.refresh(server)
     return server
 
 
