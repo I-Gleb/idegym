@@ -50,3 +50,6 @@ class TestBashExecutorInDocker:
     def test_command_with_timeout_in_docker(self):
         """Test that a command with a timeout raises the appropriate exception in a Docker container."""
         self._run_test("test_command_with_timeout")
+
+    def test_a_bashrc_ending_in_a_failing_command_does_not_abort_the_script_in_docker(self):
+        self._run_test("test_a_bashrc_ending_in_a_failing_command_does_not_abort_the_script")

@@ -69,6 +69,10 @@ statement runs exactly as written, and your own `&&` and `||` behave normally. T
 on the same line, so a bash error still reports the line number you wrote. An empty script is a
 no-op that exits 0.
 
+The init sources `~/.bashrc`, and its exit status is ignored: a `.bashrc` whose last line is a
+routine `[ -f ~/.fzf.bash ] && source ~/.fzf.bash` must not fail every command. Only an init file
+that cannot be read at all aborts the command, with exit code 1 and a message on stderr.
+
 #### Per-command context
 
 Without `cwd`, `env` and `user` the only way to set context is to write it into the script —

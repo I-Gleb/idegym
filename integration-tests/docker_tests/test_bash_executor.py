@@ -119,6 +119,18 @@ class TestBashExecutor:
         assert "line 3" in stderr
 
     @pytest.mark.asyncio
+    async def test_a_bashrc_ending_in_a_failing_command_does_not_abort_the_script(self, tmp_path):
+        """`source` returns the rc file's last status; a trailing `[ -f ... ] && ...` is routine."""
+        (tmp_path / ".bashrc").write_text("export FROM_BASHRC=1\n[ -f ~/.not-installed ] && source ~/.not-installed\n")
+        executor = BashExecutor()
+
+        stdout, stderr, exit_code = await executor.execute_bash_command(
+            'printf "%s" "$FROM_BASHRC"', env={"HOME": str(tmp_path)}
+        )
+
+        assert (stdout, stderr, exit_code) == ("1", "", 0)
+
+    @pytest.mark.asyncio
     async def test_execute_command_with_working_directory(self):
         """Test executing a command with a specific working directory."""
         temp_dir = Path("/tmp/bash_test")

@@ -210,8 +210,11 @@ def _prepend_bash_integration(command: str) -> str:
     # `;` rather than `&&` so the caller's script keeps its own semantics, but the init is still
     # guarded: without this a missing or unreadable init left the script running in an
     # unconfigured shell and failing later as "command not found", with the caller's exit code.
-    guard = f'source {init} || {{ echo "IdeGYM: failed to source the bash integration at {init}" >&2 ; exit 1 ; }}'
-    return f"{guard} ; {command}"
+    # The guard tests readability rather than the status of `source`, which is that of the last
+    # command in the sourced chain — a `~/.bashrc` ending in `[ -f ~/.fzf.bash ] && ...` would
+    # otherwise abort every command.
+    guard = f'[ -r {init} ] || {{ echo "IdeGYM: cannot read the bash integration at {init}" >&2 ; exit 1 ; }}'
+    return f"{guard} ; source {init} ; {command}"
 
 
 def _user_environment(user: str) -> dict[str, str]:

@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shlex
 from pathlib import Path
 
 import pytest
@@ -238,13 +239,14 @@ def test_user_environment_rejects_an_unknown_user() -> None:
         bash_executor._user_environment("definitely-not-a-user-here")
 
 
-def test_init_prefix_aborts_when_the_integration_cannot_be_sourced() -> None:
+def test_init_prefix_aborts_when_the_integration_cannot_be_read() -> None:
     """Init failure used to be undetectable: the script ran on regardless with its own status."""
     prefixed = bash_executor._prepend_bash_integration("echo hi")
+    init = shlex.quote(str(bash_executor.__BASH_INIT_FILEPATH__))
 
-    assert "|| {" in prefixed
+    assert prefixed.startswith(f"[ -r {init} ] || {{")
     assert "exit 1" in prefixed
-    assert prefixed.endswith(" ; echo hi")
+    assert prefixed.endswith(f" ; source {init} ; echo hi")
 
 
 def test_argv_runs_the_script_file_directly_when_no_user_is_requested() -> None:
