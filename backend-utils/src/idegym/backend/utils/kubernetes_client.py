@@ -14,7 +14,15 @@ from idegym.api import __version__
 from idegym.api.config import SchedulingConfig
 from idegym.api.download import DownloadRequest
 from idegym.api.exceptions import ResourceDeletionFailedException
-from idegym.api.orchestrator.servers import ServerKind, is_managed_annotation_key
+from idegym.api.orchestrator.servers import (
+    POD_SNAPSHOT_NAME_ANNOTATION,
+    SAFE_TO_EVICT_ANNOTATION,
+    SNAPSHOT_ID_LABEL,
+    ServerKind,
+    is_managed_annotation_key,
+    managed_labels,
+    managed_selector_labels,
+)
 from idegym.api.paths import API_BASE_PATH, ActuatorPath, OpenenvPath
 from idegym.api.status import Status
 from idegym.api.type import ConditionStatus, Duration
@@ -341,23 +349,17 @@ async def deploy_server(
         logger.warning("Dropped IdeGYM-managed annotations from the caller", server=server_name, keys=dropped)
     annotations = {
         **caller_annotations,
-        "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
+        SAFE_TO_EVICT_ANNOTATION: "false",
         **prometheus_annotations,
     }
     if snapshot_tag:
         # Restore a specific GKE PodSnapshot instead of the latest one in the group.
-        annotations["podsnapshot.gke.io/ps-name"] = snapshot_tag
-    match_labels = {
-        "app": server_name,
-        "app.kubernetes.io/component": "sandbox",
-        "app.kubernetes.io/name": server_name,
-        "app.kubernetes.io/part-of": "idegym",
-    }
+        annotations[POD_SNAPSHOT_NAME_ANNOTATION] = snapshot_tag
+    match_labels = managed_selector_labels(server_name)
     labels = {
         **(extra_labels or {}),
-        **match_labels,
-        "app.kubernetes.io/version": __version__,
-        "idegym.jetbrains.com/snapshot-id": snapshot_id or server_name,
+        **managed_labels(server_name),
+        SNAPSHOT_ID_LABEL: snapshot_id or server_name,
     }
 
     toleration = (

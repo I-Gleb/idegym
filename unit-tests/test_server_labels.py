@@ -7,7 +7,12 @@ and it can never displace the managed keys the platform addresses the pod by.
 from uuid import uuid4
 
 import pytest
-from idegym.api.orchestrator.servers import StartServerRequest
+from idegym.api.orchestrator.servers import (
+    ServerKind,
+    StartServerRequest,
+    is_managed_annotation_key,
+    is_managed_label_key,
+)
 from idegym.backend.utils import kubernetes_client as kc
 from kubernetes_asyncio.client import ApiClient
 from pydantic import ValidationError
@@ -143,6 +148,24 @@ async def test_no_extra_metadata_leaves_the_objects_as_before(mocker, api_client
         "app.kubernetes.io/version",
         "idegym.jetbrains.com/snapshot-id",
     }
+
+
+@pytest.mark.parametrize("server_kind", list(ServerKind))
+async def test_every_key_deploy_server_sets_is_reserved_from_callers(mocker, api_client, server_kind) -> None:
+    """The drift guard: a managed key the validators do not reserve is one a caller can take over."""
+    objects = await _deploy(
+        mocker, api_client, server_kind=server_kind, snapshot_id="group-1", snapshot_tag="snapshot-1"
+    )
+
+    template = objects["deployment"].spec.template.metadata
+    labels = {
+        *objects["deployment"].metadata.labels,
+        *template.labels,
+        *objects["service"].metadata.labels,
+        *objects["pdb"].metadata.labels,
+    }
+    assert sorted(key for key in labels if not is_managed_label_key(key)) == []
+    assert sorted(key for key in template.annotations if not is_managed_annotation_key(key)) == []
 
 
 # --------------------------------------------------------------------------------------
