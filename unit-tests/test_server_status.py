@@ -144,6 +144,61 @@ async def test_client_wrapper_passes_the_client_id_and_parses_the_response(mocke
 
 
 # --------------------------------------------------------------------------------------
+# validate_server, the strict counterpart
+# --------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def validating(mocker):
+    """Stand in for the session ``@with_db_session`` opens and for the ownership lookup."""
+    from contextlib import asynccontextmanager
+
+    from idegym.orchestrator.database import helpers
+
+    @asynccontextmanager
+    async def session():
+        yield mocker.MagicMock()
+
+    def configure(**owned):
+        mocker.patch.object(helpers, "get_db_session", session)
+        mocker.patch.object(helpers, "_load_owned_server", mocker.AsyncMock(**owned))
+        return helpers
+
+    return configure
+
+
+@pytest.mark.parametrize("availability", [AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED])
+async def test_validate_server_accepts_a_usable_server(validating, availability) -> None:
+    record = _record(availability=availability)
+    helpers = validating(return_value=record)
+
+    assert await helpers.validate_server(client_id=uuid4(), server_id=7) is record
+
+
+async def test_validate_server_rejects_an_unusable_server_with_its_reason(validating) -> None:
+    from fastapi import HTTPException
+
+    helpers = validating(return_value=_record(availability=AvailabilityStatus.CRASHED, details="OOMKilled"))
+
+    with pytest.raises(HTTPException) as caught:
+        await helpers.validate_server(client_id=uuid4(), server_id=7)
+
+    assert caught.value.status_code == 410
+    assert caught.value.detail.endswith("(status: CRASHED): OOMKilled")
+
+
+async def test_validate_server_shares_the_ownership_check(validating) -> None:
+    from fastapi import HTTPException
+
+    helpers = validating(side_effect=HTTPException(status_code=404))
+
+    with pytest.raises(HTTPException) as caught:
+        await helpers.validate_server(client_id=uuid4(), server_id=7)
+
+    assert caught.value.status_code == 404
+
+
+# --------------------------------------------------------------------------------------
 # Pod phase lookup
 # --------------------------------------------------------------------------------------
 

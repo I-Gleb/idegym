@@ -135,21 +135,7 @@ async def _load_owned_server(db: AsyncSession, client_id: UUID, server_id: int):
 @with_db_session
 async def validate_server(db: AsyncSession, client_id: UUID, server_id: int):
     """Validate that the client owns the server and that it is in a usable state (ALIVE or REUSED)."""
-    client = await get_client(db, client_id)
-    if not client:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Client with ID {client_id} not found")
-
-    server = await get_idegym_server(db=db, server_id=server_id)
-    if not server:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"IdeGYM server with ID {server_id} not found"
-        )
-
-    if server.client_id != client_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"IdeGYM server with ID {server_id} is not associated with client ID {client_id}",
-        )
+    server = await _load_owned_server(db=db, client_id=client_id, server_id=server_id)
 
     if server.availability not in {AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED}:
         detail = f"IdeGYM server with ID {server_id} is not available (status: {server.availability})"
