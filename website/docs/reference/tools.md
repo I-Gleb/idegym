@@ -155,10 +155,14 @@ command = await mcp.call_tool(
             "command": "python -c 'import sys; print(sys.version)'",
             "command_timeout": 30.0,
             "max_output_bytes": 1048576,
+            "env": {"API_TOKEN": token},  # kept out of the command text, as over HTTP
         },
     },
 )
 ```
+
+The MCP tool takes the same `cwd`, `env`, `user` and `strip_output` fields as the HTTP request,
+with the same meaning; only the timeout is named `command_timeout`.
 
 **Via Python client:**
 
