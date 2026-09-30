@@ -347,7 +347,7 @@ All error responses include a JSON body: `{"timestamp": "...", "message": "...",
 
 | Method | Path | Success | Error |
 |--------|------|---------|-------|
-| `POST` | `/api/tools/bash` | `200 OK` | `400` on a bad `cwd` or `user`; `500` on timeout; bash failure is in `exit_code` |
+| `POST` | `/api/tools/bash` | `200 OK` | `400` on a bad `cwd` or `user`; `422` on an invalid `env`; `500` on timeout; bash failure is in `exit_code` |
 
 Response: `{stdout, stderr, exit_code}`. A non-zero `exit_code` does **not** produce an HTTP error — it is encoded in the response body.
 

@@ -102,6 +102,9 @@ prefer it to an `export` line for anything sensitive.
 A `PATH` in `env` governs the commands your script runs, not how IdeGYM starts it: `bash` itself
 is resolved once against the server's own `PATH`, so `env={"PATH": "/opt/tool/bin"}` is safe.
 
+Names must be shell identifiers (`[A-Za-z_][A-Za-z0-9_]*`) and values must not contain NUL; any
+other entry is rejected with `422 Unprocessable Entity` before the command runs.
+
 `user` runs the script as that user, with the environment described above plus the user's own
 `HOME`, `USER`, `LOGNAME` and `SHELL`. Naming the server's own user is not a switch at all. A
 root server drops privileges with `runuser --preserve-environment`; the server image runs as the

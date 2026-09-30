@@ -412,6 +412,22 @@ def test_bash_request_defaults_to_no_per_command_context() -> None:
     assert (request.cwd, request.env, request.user) == (None, {}, None)
 
 
+@pytest.mark.parametrize(
+    "env",
+    [{"A=B": "1"}, {"": "x"}, {"1ABC": "x"}, {"WITH SPACE": "x"}, {"K": "a\x00b"}],
+)
+def test_bash_request_rejects_an_environment_the_os_cannot_carry(env) -> None:
+    """These reached `execve` and failed there with a bare ValueError, which became a 500."""
+    with pytest.raises(ValidationError):
+        BashCommandRequest(command="true", env=env)
+
+
+def test_bash_request_accepts_ordinary_environment_names_and_values() -> None:
+    env = {"PATH": "/usr/bin", "_private": "", "CI": "1", "JSON": '{"a": "b=c"}'}
+
+    assert BashCommandRequest(command="true", env=env).env == env
+
+
 def test_init_prefix_uses_a_separator_so_it_cannot_gate_the_script() -> None:
     prefixed = bash_executor._prepend_bash_integration("a; b; c")
 
