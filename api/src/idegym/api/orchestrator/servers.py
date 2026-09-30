@@ -162,7 +162,9 @@ class StartServerRequest(BaseModel):
             "so a sandbox can be found with 'kubectl get pods -l ...' and grouped for cost "
             "attribution. Keys IdeGYM manages ('app', 'app.kubernetes.io/*', 'idegym.jetbrains.com/*') "
             "are rejected rather than silently ignored, since overwriting them would break the "
-            "selectors that address the pod."
+            "selectors that address the pod. Applied only when a server is created: a server taken "
+            "over through RESTART or RESET keeps the labels it was created with, so use "
+            "reuse_strategy=NONE when the pod's labels must match this request."
         ),
         examples=[{"team": "research", "job": "swe-bench-run-42"}],
     )
@@ -172,7 +174,8 @@ class StartServerRequest(BaseModel):
             "Extra annotations applied to the server pod. Use for metadata too long or too "
             "unstructured to be a label, such as a task URL or a serialized request id. Keys IdeGYM "
             "manages ('cluster-autoscaler.kubernetes.io/safe-to-evict', 'podsnapshot.gke.io/*', "
-            "'prometheus.io/*') are rejected rather than silently overwritten."
+            "'prometheus.io/*') are rejected rather than silently overwritten. Like 'labels', applied "
+            "only when a server is created: a reused server keeps the annotations it was created with."
         ),
         examples=[{"idegym.example.com/task-url": "https://tracker.example.com/TASK-1"}],
     )
@@ -230,7 +233,9 @@ class StartServerRequest(BaseModel):
             "on all seven of: client name, image_tag, runtime_class_name, run_as_root, server_kind, "
             "server_name (when set), and an availability of FINISHED. A server is FINISHED only "
             "after finish_server; a client that always calls stop_server leaves its servers STOPPED, "
-            "so reuse never hits. StartServerResponse.reused reports what actually happened."
+            "so reuse never hits. StartServerResponse.reused reports what actually happened. A reused "
+            "server keeps the Kubernetes labels and annotations it was created with; only NONE "
+            "guarantees they match this request."
         ),
     )
     server_kind: ServerKind = Field(

@@ -199,8 +199,11 @@ including ones under the managed label prefixes, because annotations carry no se
 Two things they deliberately do not affect. They are not part of the snapshot hash — they
 describe who asked for a sandbox, not what is in it, and a per-job label would otherwise make
 every snapshot a miss. And they are not part of reuse matching: a server reused through
-`RESTART` or `RESET` keeps the labels it was started with, so do not rely on them to tell one
-episode from the next on a reused server.
+`RESTART` or `RESET` (the default) keeps the labels and annotations it was created with, and the
+new request's values are not applied to it. So `kubectl get pods -l job=<new job>` does not find
+a reused sandbox. Pass `reuse_strategy=ServerReuseStrategy.NONE` when the pod's metadata must
+match this request, and do not rely on labels to tell one episode from the next on a reused
+server.
 
 ### `start_server(...)` / `stop_server(...)` / `finish_server(...)`
 
@@ -246,6 +249,9 @@ these match:
 
 `server_name` is one of seven filters, not the key — two requests with the same name but
 different images will not share a server.
+
+`labels` and `annotations` are not among them, and a server that is taken over keeps the
+Kubernetes metadata it was created with — see [Tagging a sandbox](#tagging-a-sandbox).
 
 The last row is the one that catches people. A server becomes `FINISHED` only through
 `finish_server` (or `close_action=FINISH`, which `with_server` uses by default). A client that
