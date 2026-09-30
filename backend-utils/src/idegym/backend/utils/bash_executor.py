@@ -251,33 +251,37 @@ def _process_argv(script_path: str, user: Optional[str]) -> list[str]:
     return [_RUNUSER, "--preserve-environment", "-u", user, "--", *invocation]
 
 
-def _write_script(script: str, readable_by_other_user: bool) -> str:
-    """Write the script to a temp file and return its path.
+def _create_script_file() -> tuple[int, str]:
+    """Create the private temp file the script is run from and return its descriptor and path.
 
     Passing the script as a ``bash -c`` argument capped it at Linux's ``MAX_ARG_STRLEN``
     (128 KiB), and an oversized script failed with a bare ``E2BIG`` rather than anything a
     caller could act on. A file has no such ceiling, and unlike feeding bash on stdin it leaves
     the command's own stdin alone — a script read from stdin is consumed incrementally, so any
     command inside it that reads stdin would swallow the rest of the script.
+
+    This runs on the event loop rather than in a worker thread on purpose: a request cancelled
+    while ``mkstemp`` ran in a thread lost the path, and with it the only way to remove the file.
     """
-    descriptor, path = tempfile.mkstemp(prefix="idegym-bash-", suffix=".sh")
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(script)
-        if readable_by_other_user:
-            # mkstemp creates 0600, which the target user of `runuser` could not read.
-            # TODO: 0644 also exposes the script to any co-tenant process for the duration of the
-            # run, which matters because callers do put credentials in scripts (see
-            # `_redact_exports`). Prefer `os.chown(path, uid, -1)` with 0600, or a directory only
-            # the target user can traverse.
-            os.chmod(path, 0o644)
-    except BaseException:
-        _remove_script(path)
-        raise
-    return path
+    return tempfile.mkstemp(prefix="idegym-bash-", suffix=".sh")
 
 
-def _remove_script(path: str) -> None:
+def _write_script(descriptor: int, script: str, readable_by_other_user: bool) -> None:
+    """Write the script through ``descriptor``, which stays open and owned by the caller."""
+    with os.fdopen(descriptor, "w", encoding="utf-8", closefd=False) as handle:
+        handle.write(script)
+    if readable_by_other_user:
+        # mkstemp creates 0600, which the target user of `runuser` could not read.
+        # TODO: 0644 also exposes the script to any co-tenant process for the duration of the
+        # run, which matters because callers do put credentials in scripts (see
+        # `_redact_exports`). Prefer `os.chown(path, uid, -1)` with 0600, or a directory only
+        # the target user can traverse.
+        os.fchmod(descriptor, 0o644)
+
+
+def _discard_script(descriptor: int, path: str) -> None:
+    with contextlib.suppress(OSError):
+        os.close(descriptor)
     with contextlib.suppress(OSError):
         os.unlink(path)
 
@@ -406,8 +410,13 @@ class BashExecutor:
         logger.debug("Bash command", command=_command_excerpt(command))
 
         bash_command = _prepend_bash_integration(command)
-        script_path = await asyncio.to_thread(_write_script, bash_command, user is not None)
+        descriptor, script_path = _create_script_file()
+        # Everything from here to the cleanup is one try/finally, so a cancellation at any await
+        # still reaches the path. The write is shielded and awaited in the cleanup because the
+        # worker thread keeps using the descriptor after a cancelled await has returned.
+        write = asyncio.ensure_future(asyncio.to_thread(_write_script, descriptor, bash_command, user is not None))
         try:
+            await asyncio.shield(write)
             process = await asyncio.create_subprocess_exec(
                 *_process_argv(script_path, user),
                 stdout=asyncio.subprocess.PIPE,
@@ -416,34 +425,33 @@ class BashExecutor:
                 preexec_fn=os.setsid,
                 env=environment,
             )
-        except BaseException:
-            _remove_script(script_path)
-            raise
 
-        communication_task = asyncio.create_task(
-            _communicate_bounded(process, stdout_collector, stderr_collector),
-            name=f"bash-output-{process.pid}",
-        )
-        termination_started = False
-        timed_out = False
-        try:
+            communication_task = asyncio.create_task(
+                _communicate_bounded(process, stdout_collector, stderr_collector),
+                name=f"bash-output-{process.pid}",
+            )
+            termination_started = False
+            timed_out = False
             try:
-                await asyncio.wait_for(asyncio.shield(communication_task), timeout=timeout)
-            except TimeoutError:
-                timed_out = True
-                termination_started = True
-                await terminate_process_group(process, graceful_termination_timeout)
-            except asyncio.CancelledError:
-                termination_started = True
-                await terminate_process_group(process, graceful_termination_timeout)
-                raise
+                try:
+                    await asyncio.wait_for(asyncio.shield(communication_task), timeout=timeout)
+                except TimeoutError:
+                    timed_out = True
+                    termination_started = True
+                    await terminate_process_group(process, graceful_termination_timeout)
+                except asyncio.CancelledError:
+                    termination_started = True
+                    await terminate_process_group(process, graceful_termination_timeout)
+                    raise
+            finally:
+                if not termination_started and (process.returncode is None or not communication_task.done()):
+                    await terminate_process_group(process, graceful_termination_timeout)
+                await _finish_output_drain(process, communication_task)
+                _close_output_pipes(process)
+                await _reap_process(process)
         finally:
-            if not termination_started and (process.returncode is None or not communication_task.done()):
-                await terminate_process_group(process, graceful_termination_timeout)
-            await _finish_output_drain(process, communication_task)
-            _close_output_pipes(process)
-            await _reap_process(process)
-            _remove_script(script_path)
+            await asyncio.gather(write, return_exceptions=True)
+            _discard_script(descriptor, script_path)
 
         if timed_out:
             logger.warning(

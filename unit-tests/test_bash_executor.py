@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shlex
+import threading
 from pathlib import Path
 
 import pytest
@@ -280,26 +281,62 @@ def test_argv_passes_a_hostile_user_name_as_one_argument() -> None:
     assert "dev; rm -rf /" in argv
 
 
+def _written_script(readable_by_other_user: bool) -> tuple[int, str]:
+    descriptor, path = bash_executor._create_script_file()
+    bash_executor._write_script(descriptor, "echo hi", readable_by_other_user=readable_by_other_user)
+    return descriptor, path
+
+
 def test_script_file_is_private_unless_another_user_must_read_it() -> None:
-    private = bash_executor._write_script("echo hi", readable_by_other_user=False)
-    shared = bash_executor._write_script("echo hi", readable_by_other_user=True)
+    private = _written_script(readable_by_other_user=False)
+    shared = _written_script(readable_by_other_user=True)
 
     try:
-        assert Path(private).read_text() == "echo hi"
-        assert Path(private).stat().st_mode & 0o777 == 0o600
-        assert Path(shared).stat().st_mode & 0o777 == 0o644
+        assert Path(private[1]).read_text() == "echo hi"
+        assert Path(private[1]).stat().st_mode & 0o777 == 0o600
+        assert Path(shared[1]).stat().st_mode & 0o777 == 0o644
     finally:
-        bash_executor._remove_script(private)
-        bash_executor._remove_script(shared)
+        bash_executor._discard_script(*private)
+        bash_executor._discard_script(*shared)
 
 
-def test_removing_the_script_twice_is_not_an_error() -> None:
-    path = bash_executor._write_script("echo hi", readable_by_other_user=False)
+def test_discarding_the_script_twice_is_not_an_error() -> None:
+    descriptor, path = _written_script(readable_by_other_user=False)
 
-    bash_executor._remove_script(path)
-    bash_executor._remove_script(path)
+    bash_executor._discard_script(descriptor, path)
+    bash_executor._discard_script(descriptor, path)
 
     assert not Path(path).exists()
+
+
+async def test_a_cancelled_write_still_removes_the_script_file(monkeypatch) -> None:
+    """`mkstemp` used to run in the worker thread, so a cancel there lost the path to clean up."""
+    created: list[tuple[int, str]] = []
+    started = threading.Event()
+    release = threading.Event()
+    create, write = bash_executor._create_script_file, bash_executor._write_script
+
+    def record_create():
+        created.append(create())
+        return created[-1]
+
+    def slow_write(descriptor, script, readable_by_other_user):
+        started.set()
+        release.wait(timeout=5)
+        write(descriptor, script, readable_by_other_user)
+
+    monkeypatch.setattr(bash_executor, "_create_script_file", record_create)
+    monkeypatch.setattr(bash_executor, "_write_script", slow_write)
+    task = asyncio.create_task(bash_executor.BashExecutor().execute_bash_command("true"))
+    await asyncio.to_thread(started.wait, 5)
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+    await asyncio.wait([task])
+    assert task.cancelled()
+
+    assert not Path(created[0][1]).exists()
 
 
 def test_bash_request_defaults_to_no_per_command_context() -> None:

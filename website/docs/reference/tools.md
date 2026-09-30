@@ -61,7 +61,8 @@ incrementally, so any command inside it that reads stdin — `cat`, `read`, an i
 installer — would swallow the rest of the script. Running from a file leaves the command's own
 stdin alone.
 
-The temp file is removed once the command finishes, including when it times out.
+The temp file is removed once the command finishes, including when it times out or the request
+is cancelled.
 
 Before the script, IdeGYM sources a bundled init file that sets up the shell environment. It is
 joined to your script with `;`, not `&&`, so it cannot change what your script means: every

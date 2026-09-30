@@ -245,14 +245,14 @@ class TestBashExecutor:
     async def test_the_script_file_is_removed_after_the_command(self, monkeypatch):
         executor = BashExecutor()
         written: list[str] = []
-        original = bash_executor_module._write_script
+        original = bash_executor_module._create_script_file
 
-        def record(script, readable_by_other_user):
-            path = original(script, readable_by_other_user)
+        def record():
+            descriptor, path = original()
             written.append(path)
-            return path
+            return descriptor, path
 
-        monkeypatch.setattr(bash_executor_module, "_write_script", record)
+        monkeypatch.setattr(bash_executor_module, "_create_script_file", record)
 
         await executor.execute_bash_command("true")
 
@@ -262,14 +262,14 @@ class TestBashExecutor:
     async def test_the_script_file_is_removed_after_a_timeout(self, monkeypatch):
         executor = BashExecutor()
         written: list[str] = []
-        original = bash_executor_module._write_script
+        original = bash_executor_module._create_script_file
 
-        def record(script, readable_by_other_user):
-            path = original(script, readable_by_other_user)
+        def record():
+            descriptor, path = original()
             written.append(path)
-            return path
+            return descriptor, path
 
-        monkeypatch.setattr(bash_executor_module, "_write_script", record)
+        monkeypatch.setattr(bash_executor_module, "_create_script_file", record)
 
         with pytest.raises(BashCommandExecutionTimeoutError):
             await executor.execute_bash_command("sleep 10", timeout=0.2, graceful_termination_timeout=0.1)
