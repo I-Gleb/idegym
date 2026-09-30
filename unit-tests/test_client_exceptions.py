@@ -318,3 +318,71 @@ async def test_with_server_cleans_up_after_a_successful_body(mocker) -> None:
         assert server.server_id == 7
 
     client.finish_server.assert_awaited_once_with(server)
+
+
+# --------------------------------------------------------------------------------------
+# Quota exhaustion and registration failures
+# --------------------------------------------------------------------------------------
+
+
+def _start_server_operations(mocker, terminal_results):
+    from idegym.client.operations.servers import ServerOperations
+
+    client_id = uuid4()
+    utils = mocker.MagicMock()
+    utils.validate_client_id.side_effect = lambda value: value
+    utils.validate_namespace.side_effect = lambda namespace: namespace or "idegym"
+    utils.make_request = mocker.AsyncMock(
+        return_value={"namespace": "idegym", "client_id": str(client_id), "operation_id": 3}
+    )
+    utils.parse_response.side_effect = lambda response_raw, model_class: model_class.model_validate(response_raw)
+    utils.wait_for_async_operation_to_end = mocker.AsyncMock(side_effect=terminal_results)
+    return ServerOperations(utils=utils, project=mocker.MagicMock()), client_id
+
+
+async def test_start_server_raises_busy_when_the_quota_stays_exhausted(mocker) -> None:
+    sleep = mocker.patch("idegym.client.operations.servers.sleep", new=mocker.AsyncMock())
+    quota = ErrorResponse(status_code=429, body="quota exhausted")
+    operations, client_id = _start_server_operations(mocker, [quota])
+
+    with pytest.raises(IdeGYMBusyError) as caught:
+        await operations.start_server(
+            image_tag="registry.test/env:latest",
+            client_id=client_id,
+            server_start_wait_timeout_in_seconds=10,
+            retry_delay_in_seconds=15,
+        )
+
+    assert (caught.value.status_code, caught.value.body) == (429, "quota exhausted")
+    assert "still rate-limited after 1 attempt(s)" in str(caught.value)
+    sleep.assert_not_awaited()
+
+
+async def test_start_server_retries_a_429_while_the_wait_allows(mocker) -> None:
+    from idegym.api.orchestrator.servers import StartServerResponse
+
+    mocker.patch("idegym.client.operations.servers.sleep", new=mocker.AsyncMock())
+    started = StartServerResponse(namespace="idegym", client_id=uuid4(), server_id=5)
+    operations, client_id = _start_server_operations(mocker, [ErrorResponse(status_code=429, body="quota"), started])
+
+    response = await operations.start_server(
+        image_tag="registry.test/env:latest", client_id=client_id, retry_delay_in_seconds=1
+    )
+
+    assert response is started
+
+
+async def test_a_failed_registration_raises_the_typed_error(mocker) -> None:
+    from idegym.client.client import IdeGYMClient
+
+    client = IdeGYMClient.__new__(IdeGYMClient)
+    client._http_client = mocker.MagicMock(is_closed=False)
+    client._utils = mocker.MagicMock(current_namespace="idegym")
+    client.name, client.nodes_count = "run", 0
+    client._register_client = mocker.AsyncMock(return_value=ErrorResponse(status_code=403, body="namespace denied"))
+
+    with pytest.raises(IdeGYMAuthError) as caught:
+        await client.__aenter__()
+
+    assert (caught.value.status_code, caught.value.body) == (403, "namespace denied")
+    assert "Failed to register client" in str(caught.value)

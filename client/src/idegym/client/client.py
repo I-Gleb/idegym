@@ -241,6 +241,12 @@ class IdeGYMClient:
     async def __aenter__(self):
         assert not self._http_client.is_closed, "Can not communicate using a closed client!"
         registration_response = await self._register_client(self.name, self._utils.current_namespace, self.nodes_count)
+        if isinstance(registration_response, ErrorResponse):
+            raise http_error(
+                f"Failed to register client: {registration_response.model_dump()}",
+                status_code=registration_response.status_code,
+                body=registration_response.body,
+            )
         if isinstance(registration_response, RegisteredClientResponse) and registration_response.id:
             self._utils.client_id = registration_response.id
             if self._utils.client_id and not self._heartbeat_task:

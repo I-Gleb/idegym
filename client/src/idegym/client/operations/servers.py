@@ -45,7 +45,7 @@ from idegym.api.type import (
     KubernetesObjectName,
     OCIImageName,
 )
-from idegym.client.exceptions import IdeGYMTimeoutError, raise_for_error_response
+from idegym.client.exceptions import IdeGYMBusyError, IdeGYMTimeoutError, raise_for_error_response
 from idegym.client.operations.project import ProjectOperations
 from idegym.client.operations.utils import HTTPUtils, PollingConfig
 from idegym.utils.logging import get_logger
@@ -90,10 +90,13 @@ class ServerOperations:
 
         start_time = time.time()
         attempts = 0
+        rate_limited: Optional[ErrorResponse] = None
 
         while True:
             elapsed_time = time.time() - start_time
             if elapsed_time >= server_start_wait_timeout_in_seconds:
+                if rate_limited is not None:
+                    raise self._still_rate_limited(rate_limited, attempts, server_start_wait_timeout_in_seconds)
                 raise IdeGYMTimeoutError(f"Server start timed out after {server_start_wait_timeout_in_seconds} seconds")
 
             remaining_time = int(server_start_wait_timeout_in_seconds - elapsed_time)
@@ -156,19 +159,29 @@ class ServerOperations:
             if isinstance(response, ErrorResponse):
                 if response.status_code == HTTPStatus.TOO_MANY_REQUESTS.value:
                     attempts += 1
+                    rate_limited = response
+                    if time.time() - start_time + retry_delay_in_seconds >= server_start_wait_timeout_in_seconds:
+                        raise self._still_rate_limited(response, attempts, server_start_wait_timeout_in_seconds)
+
                     logger.warning(
                         f"Received 429 Too Many Requests error (attempt {attempts}). "
                         f"Retrying in {retry_delay_in_seconds} seconds..."
                     )
-
-                    if elapsed_time + retry_delay_in_seconds >= server_start_wait_timeout_in_seconds:
-                        raise IdeGYMTimeoutError(
-                            f"Server start timed out after {server_start_wait_timeout_in_seconds} seconds"
-                        )
-
                     await sleep(retry_delay_in_seconds)
                 else:
                     return response
+
+    @staticmethod
+    def _still_rate_limited(response: ErrorResponse, attempts: int, timeout_in_seconds: float) -> IdeGYMBusyError:
+        # The wait ran out while the orchestrator was still refusing for quota. Reporting that as a
+        # timeout would hide it from `except IdeGYMBusyError: back off`, which is the handler that
+        # knows what to do about an exhausted quota.
+        return IdeGYMBusyError(
+            f"Server start still rate-limited after {attempts} attempt(s) in {timeout_in_seconds} seconds: "
+            f"{response.model_dump()}",
+            status_code=response.status_code,
+            body=response.body,
+        )
 
     async def stop_server(
         self,

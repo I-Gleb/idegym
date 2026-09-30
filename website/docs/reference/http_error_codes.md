@@ -14,9 +14,12 @@ got no status at all raises `IdeGYMTimeoutError` for a client-side deadline, or
 `IdeGYMConnectionError` when the connection failed, both with `status_code` set to `None`. The
 full mapping is in [Client Library — Error Handling](client.md#error-handling).
 
-A failure reported through an async operation's `result.status_code` is mapped the same way, so
-`429` on a background start-server operation raises the same `IdeGYMBusyError` as `429` on the
-synchronous request would.
+A failure reported through an async operation's `result.status_code` is mapped the same way, with
+one exception: `start_server` treats a `429` from the background operation as "quota full, try
+again", and resubmits every `retry_delay_in_seconds` until its start wait runs out. Only then does
+it raise `IdeGYMBusyError`, carrying the last `429` and its body — so `except IdeGYMBusyError` is
+where an exhausted quota lands, not `IdeGYMTimeoutError`. A failed client registration on entering
+`IdeGYMClient` raises the typed error for its status in the same way.
 
 ---
 
