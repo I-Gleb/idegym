@@ -4,6 +4,7 @@ The regression is a build that dies deep inside Docker with `cp: no such file`, 
 care mostly about *when* the failure happens and *what it says*.
 """
 
+import re
 import subprocess
 
 import pytest
@@ -88,11 +89,28 @@ def test_the_git_check_names_the_url_and_the_ref(tmp_path) -> None:
     assert "IdeGYM source at https://example.test/idegym.git@abc123 is missing: plugins" in result.stderr
 
 
-def test_the_git_check_covers_every_path_the_renderer_copies() -> None:
+def test_the_git_check_covers_exactly_the_paths_the_git_render_copies() -> None:
+    """Compared with the rendered ``cp`` lines, so a copy added without a check fails here."""
     dockerfile = IdeGYMServer.from_git(url="https://example.test/idegym.git").render(_context())
 
     loop = dockerfile[dockerfile.index("for path in ") : dockerfile.index("; do")]
-    assert set(loop.removeprefix("for path in ").split()) == set(_REQUIRED_WORKSPACE_PATHS)
+    checked = set(loop.removeprefix("for path in ").split())
+    after_check = dockerfile[dockerfile.index("fi\n") :]
+    copied = {path.split("/")[0] for path in re.findall(r"/tmp/idegym-src/(\S+)", after_check)}
+    assert checked == copied
+
+
+def test_the_local_check_covers_exactly_the_paths_the_local_render_copies(tmp_path) -> None:
+    """``from_local`` checks ``_REQUIRED_WORKSPACE_PATHS`` on the host, so that is held to the ``COPY`` lines."""
+    dockerfile = IdeGYMServer.from_local(_workspace(tmp_path)).render(_context())
+
+    copied = set()
+    for line in dockerfile.splitlines():
+        if not line.startswith("COPY ") or "--from=" in line:
+            continue
+        arguments = [token for token in line.split()[1:] if not token.startswith("--")]
+        copied.update(arguments[:-1])  # the last argument is the destination
+    assert copied == set(_REQUIRED_WORKSPACE_PATHS)
 
 
 def test_shell_metacharacters_in_the_url_and_ref_reach_the_message_verbatim(tmp_path) -> None:
