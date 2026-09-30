@@ -320,7 +320,9 @@ class IdeGYMClient:
 
         On exit, the server is either finished (``FINISH``) or stopped and its resources deleted
         (``STOP``) depending on ``close_action``. Exceptions from the body are re-raised after
-        the cleanup.
+        the cleanup. If the cleanup fails as well, its error is logged rather than raised, so it
+        cannot mask the body's exception — the one that says what actually went wrong. A cleanup
+        failure after a body that succeeded is raised as usual.
         """
         server = await self.start_server(
             image_tag=image_tag,
@@ -350,14 +352,27 @@ class IdeGYMClient:
 
         try:
             yield server
-        except Exception:
-            logger.exception("Exception while working with server")
+        except BaseException as error:
+            if isinstance(error, Exception):
+                logger.exception("Exception while working with server")
+            try:
+                await self._close_server(server, close_action=close_action, polling_config=polling_config)
+            except Exception:
+                logger.exception(
+                    "Server cleanup failed while another exception was propagating",
+                    server_id=server.server_id,
+                    close_action=close_action,
+                )
             raise
-        finally:
-            if close_action == ServerCloseAction.STOP:
-                await self.stop_server(server, polling_config=polling_config)
-            else:
-                await self.finish_server(server)
+        await self._close_server(server, close_action=close_action, polling_config=polling_config)
+
+    async def _close_server(
+        self, server: IdeGYMServer, close_action: ServerCloseAction, polling_config: Optional[PollingConfig]
+    ) -> None:
+        if close_action == ServerCloseAction.STOP:
+            await self.stop_server(server, polling_config=polling_config)
+        else:
+            await self.finish_server(server)
 
     @retry_with_backoff(attempts=3)
     async def stop_server(

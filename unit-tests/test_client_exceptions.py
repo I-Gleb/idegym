@@ -5,6 +5,7 @@ retry policy branches on, and the fact that the change stayed backwards compatib
 messages and the ``RuntimeError`` base are what existing callers already depend on.
 """
 
+from typing import Optional
 from uuid import uuid4
 
 import httpx
@@ -183,3 +184,56 @@ def test_raise_for_error_response_passes_a_success_through() -> None:
     value = object()
 
     assert raise_for_error_response(value, "Doing a thing") is value
+
+
+# --------------------------------------------------------------------------------------
+# with_server cleanup
+# --------------------------------------------------------------------------------------
+
+
+def _client_with_server(mocker, cleanup_error: Optional[Exception]):
+    from idegym.client.client import IdeGYMClient
+
+    client = IdeGYMClient.__new__(IdeGYMClient)
+    client.start_server = mocker.AsyncMock(return_value=mocker.MagicMock(server_id=7))
+    client.stop_server = mocker.AsyncMock(side_effect=cleanup_error)
+    client.finish_server = mocker.AsyncMock(side_effect=cleanup_error)
+    return client
+
+
+@pytest.mark.parametrize("close_action", ["STOP", "FINISH"])
+async def test_with_server_keeps_the_body_exception_when_cleanup_also_fails(mocker, close_action) -> None:
+    from idegym.client.client import ServerCloseAction
+
+    client = _client_with_server(mocker, http_error("already gone", status_code=404))
+
+    async def fail_inside_the_server() -> None:
+        async with client.with_server(
+            image_tag="registry.test/env:latest", close_action=ServerCloseAction(close_action)
+        ):
+            raise ValueError("body failed")
+
+    with pytest.raises(ValueError, match="body failed"):
+        await fail_inside_the_server()
+
+    cleanup = client.stop_server if close_action == "STOP" else client.finish_server
+    cleanup.assert_awaited_once()
+
+
+async def test_with_server_raises_a_cleanup_failure_after_a_successful_body(mocker) -> None:
+    from idegym.client.client import ServerCloseAction
+
+    client = _client_with_server(mocker, http_error("delete failed", status_code=500))
+
+    with pytest.raises(IdeGYMServerError, match="delete failed"):
+        async with client.with_server(image_tag="registry.test/env:latest", close_action=ServerCloseAction.STOP):
+            pass
+
+
+async def test_with_server_cleans_up_after_a_successful_body(mocker) -> None:
+    client = _client_with_server(mocker, None)
+
+    async with client.with_server(image_tag="registry.test/env:latest") as server:
+        assert server.server_id == 7
+
+    client.finish_server.assert_awaited_once_with(server)
