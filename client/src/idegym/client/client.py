@@ -44,7 +44,7 @@ from idegym.api.type import (
     KubernetesObjectName,
     OCIImageName,
 )
-from idegym.client.exceptions import http_error
+from idegym.client.exceptions import http_error, raise_for_error_response
 from idegym.client.operations.clients import ClientOperations
 from idegym.client.operations.forwarding import ForwardingOperations
 from idegym.client.operations.jobs import JobOperations
@@ -467,13 +467,8 @@ class IdeGYMClient:
             annotations=annotations,
         )
 
-        if isinstance(server_response, ErrorResponse):
-            raise http_error(
-                f"Failed to start server: {server_response.model_dump()}",
-                status_code=server_response.status_code,
-                body=server_response.body,
-            )
-        elif isinstance(server_response, StartServerResponse) and server_response.server_id:
+        server_response = raise_for_error_response(server_response, f"Starting server {server_name}")
+        if isinstance(server_response, StartServerResponse) and server_response.server_id:
             return IdeGYMServer(
                 server_id=server_response.server_id,
                 http_utils=self._utils,

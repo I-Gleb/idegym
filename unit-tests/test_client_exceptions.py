@@ -236,9 +236,11 @@ async def test_start_server_failure_is_typed(mocker) -> None:
     client.server.start_server = mocker.AsyncMock(return_value=ErrorResponse(status_code=503, body="no capacity"))
 
     with pytest.raises(IdeGYMBusyError) as caught:
-        await client.start_server(image_tag="registry.test/env:latest")
+        await client.start_server(image_tag="registry.test/env:latest", server_name="srv")
 
     assert caught.value.status_code == 503
+    assert caught.value.body == "no capacity"
+    assert str(caught.value).startswith("Starting server srv failed: ")
 
 
 # --------------------------------------------------------------------------------------
