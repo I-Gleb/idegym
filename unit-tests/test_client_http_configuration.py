@@ -60,6 +60,33 @@ def test_configuring_a_client_you_also_supplied_is_rejected(conflicting) -> None
         _build(http_client=httpx.AsyncClient(base_url="http://elsewhere.test"), **conflicting)
 
 
+def test_a_transport_with_limits_is_rejected() -> None:
+    # httpx uses a supplied transport as-is, so the limits would be dropped without a word.
+    with pytest.raises(ValueError, match="limits"):
+        _build(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+            limits=httpx.Limits(max_connections=1),
+        )
+
+
+def test_a_supplied_client_needs_no_credentials(monkeypatch) -> None:
+    for name in CREDENTIALS:
+        monkeypatch.delenv(name)
+    supplied = httpx.AsyncClient(base_url="https://idegym.example", auth=("user", "secret"))
+
+    client = IdeGYMClient(orchestrator_url="idegym.example", name="c", namespace="idegym", http_client=supplied)
+
+    assert client._http_client is supplied
+
+
+def test_a_built_client_still_needs_credentials(monkeypatch) -> None:
+    for name in CREDENTIALS:
+        monkeypatch.delenv(name)
+
+    with pytest.raises(ValueError, match="Username and password"):
+        IdeGYMClient(orchestrator_url="idegym.example", name="c", namespace="idegym")
+
+
 @pytest.fixture
 def unregistered_exit(mocker):
     """Let ``__aexit__`` run without a registration behind it."""

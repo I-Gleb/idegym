@@ -109,37 +109,48 @@ class IdeGYMClient:
                 environment variables when not provided. Tracing stays off unless an endpoint is
                 configured, either here or through ``IDEGYM_OTEL_TRACING_ENDPOINT``.
             transport: Transport for the HTTP client this object builds — for an alternative HTTP
-                stack, a recording transport in tests, or a proxy.
-            limits: Connection-pool limits for the HTTP client this object builds.
+                stack, a recording transport in tests, or a proxy. It is used as-is, so its pool
+                limits are whatever it was built with.
+            limits: Connection-pool limits for the HTTP client this object builds. Mutually
+                exclusive with ``transport``: httpx applies them only to the transport it builds
+                itself.
             http_client: A fully configured ``httpx.AsyncClient`` to use verbatim. Nothing about it
-                is modified, so it must already carry ``base_url`` and any authentication, and it
-                is not closed on exit — its owner closes it. Mutually exclusive with ``transport``
-                and ``limits``.
+                is modified — it is not instrumented for tracing either — so it must already carry
+                ``base_url`` and any authentication, and it is not closed on exit: its owner closes
+                it. With it, ``orchestrator_url``, ``auth``, ``request_timeout_in_seconds`` and
+                ``otel_config`` are ignored and no credentials are required. Mutually exclusive with ``transport`` and
+                ``limits``.
 
         Raises:
-            ValueError: if ``http_client`` is combined with ``transport`` or ``limits``, since the
-                supplied client is used as-is and those arguments would be silently ignored.
+            ValueError: if ``http_client`` is combined with ``transport`` or ``limits``, or
+                ``transport`` with ``limits``, since the ignored arguments would otherwise be
+                dropped silently.
         """
         if orchestrator_url == "idegym.test":
             orchestrator_url = f"http://{orchestrator_url}"
         elif not orchestrator_url.startswith(("http://", "https://")):
             orchestrator_url = f"https://{orchestrator_url}"
 
-        auth = auth or BasicAuth(
-            username=env.get("IDEGYM_AUTH_USERNAME"),
-            password=env.get("IDEGYM_AUTH_PASSWORD"),
-        )
-        if not orchestrator_url == "http://idegym.test" and not (auth.username and auth.password):
-            raise ValueError("Username and password must be provided or set in environment variables")
-
         if http_client is not None and (transport is not None or limits is not None):
             raise ValueError(
                 "transport and limits configure the client IdeGYM builds; they do not apply to http_client"
             )
+        if transport is not None and limits is not None:
+            raise ValueError(
+                "limits apply only to the transport httpx builds itself; set them on the supplied transport instead"
+            )
 
-        # A supplied client belongs to its caller: used as-is, and closed by them, not here.
+        # A supplied client belongs to its caller: used as-is, and closed by them, not here. It
+        # carries its own authentication, so there are no credentials to require.
         owns_http_client = http_client is None
         if http_client is None:
+            auth = auth or BasicAuth(
+                username=env.get("IDEGYM_AUTH_USERNAME"),
+                password=env.get("IDEGYM_AUTH_PASSWORD"),
+            )
+            if not orchestrator_url == "http://idegym.test" and not (auth.username and auth.password):
+                raise ValueError("Username and password must be provided or set in environment variables")
+
             http_client = AsyncClient(
                 base_url=orchestrator_url,
                 timeout=request_timeout_in_seconds,
@@ -175,10 +186,13 @@ class IdeGYMClient:
             ),
         )
 
-        instrument(
-            client=http_client,
-            config=otel_config,
-        )
+        # Instrumenting patches the client, and uninstrumenting on exit would strip tracing from
+        # every other user of a shared one, so a supplied client is left exactly as it came.
+        if owns_http_client:
+            instrument(
+                client=http_client,
+                config=otel_config,
+            )
 
         self._http_client: AsyncClient = http_client
         self._owns_http_client: bool = owns_http_client
@@ -266,11 +280,11 @@ class IdeGYMClient:
             if exc_type is None:
                 raise
         finally:
-            uninstrument(
-                client=self._http_client,
-                config=self._otel_config,
-            )
             if self._owns_http_client:
+                uninstrument(
+                    client=self._http_client,
+                    config=self._otel_config,
+                )
                 await self._http_client.aclose()
 
     async def health_check(self) -> HealthCheckResponse:

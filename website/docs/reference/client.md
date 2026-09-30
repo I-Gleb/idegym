@@ -83,7 +83,7 @@ IdeGYMClient(
 | `otel_config` | OpenTelemetry tracing configuration |
 | `transport` | Transport for the HTTP client IdeGYM builds — an alternative HTTP stack, a proxy, or a recording transport in tests |
 | `limits` | Connection-pool limits for the HTTP client IdeGYM builds; omit for httpx's defaults (100 connections, 20 keep-alive) |
-| `http_client` | A fully configured `httpx.AsyncClient` to use verbatim |
+| `http_client` | A fully configured `httpx.AsyncClient` to use verbatim; `orchestrator_url`, `auth`, `request_timeout_in_seconds` and `otel_config` are then ignored |
 
 **Configuring the HTTP stack:**
 
@@ -95,15 +95,33 @@ client = IdeGYMClient(
     name="my-training-run",
     namespace="idegym",
     limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
-    transport=my_transport,
+)
+```
+
+A supplied `transport` is used as-is, and httpx applies `limits` only to a transport it builds
+itself, so the two cannot be combined — passing both raises `ValueError`. Set the limits on the
+transport instead:
+
+```python
+client = IdeGYMClient(
+    orchestrator_url="https://idegym.yourdomain.com",
+    name="my-training-run",
+    namespace="idegym",
+    transport=httpx.AsyncHTTPTransport(
+        limits=httpx.Limits(max_connections=64, max_keepalive_connections=16),
+        proxy="http://proxy.internal:3128",
+    ),
 )
 ```
 
 `http_client` is the full escape hatch. It is used exactly as given — nothing about it is
-modified, so it must already carry `base_url` and any authentication — and it is **not** closed
-when the `IdeGYMClient` context exits, because it belongs to its caller. A client IdeGYM builds
-itself is closed on exit as before. Passing `http_client` together with `transport` or `limits`
-raises `ValueError` rather than ignoring them.
+modified, not even to instrument it for tracing, so it must already carry `base_url` and any
+authentication — and it is **not** closed when the `IdeGYMClient` context exits, because it
+belongs to its caller. A client IdeGYM builds itself is closed on exit as before. With
+`http_client`, no credentials are required, and `orchestrator_url`, `auth`,
+`request_timeout_in_seconds` and `otel_config` are ignored: they only configure the client IdeGYM
+builds. Passing
+`http_client` together with `transport` or `limits` raises `ValueError` rather than ignoring them.
 
 **Authentication via environment variables:**
 
