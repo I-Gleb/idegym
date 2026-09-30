@@ -20,6 +20,7 @@ from idegym.client.exceptions import (
     IdeGYMConnectionError,
     IdeGYMHTTPError,
     IdeGYMNotFoundError,
+    IdeGYMSandboxError,
     IdeGYMServerError,
     IdeGYMTimeoutError,
     error_class_for_status,
@@ -184,22 +185,47 @@ async def test_a_gone_sandbox_is_distinguishable_from_a_busy_control_plane() -> 
         await busy.make_request("POST", "/api/idegym-servers")
 
 
-async def test_forwarding_failure_carries_the_forwarded_status_and_body(mocker) -> None:
+def _forwarding(mocker, terminal_result) -> ForwardingOperations:
     utils = mocker.MagicMock()
     utils.validate_client_id.side_effect = lambda client_id: client_id
     utils.make_request = mocker.AsyncMock(return_value={"async_operation_id": 5})
     utils.parse_response.side_effect = lambda response_raw, model_class: model_class.model_validate(response_raw)
-    utils.wait_for_async_operation_to_end = mocker.AsyncMock(
-        return_value=ErrorResponse(status_code=404, body="server 9 not found")
-    )
-    operations = ForwardingOperations(utils=utils)
+    utils.wait_for_async_operation_to_end = mocker.AsyncMock(return_value=terminal_result)
+    return ForwardingOperations(utils=utils)
 
-    with pytest.raises(IdeGYMNotFoundError) as caught:
+
+async def test_forwarding_failure_carries_the_forwarded_status_and_body(mocker) -> None:
+    operations = _forwarding(mocker, ErrorResponse(status_code=404, body='{"detail":"Path not found"}'))
+
+    with pytest.raises(IdeGYMSandboxError) as caught:
         await operations.forward_request("POST", 9, "tools/bash", client_id="c")
 
+    # A live sandbox answering 404 is not "the sandbox is gone".
+    assert not isinstance(caught.value, IdeGYMNotFoundError)
+    assert isinstance(caught.value, IdeGYMHTTPError)
     assert caught.value.status_code == 404
-    assert caught.value.body == "server 9 not found"
+    assert caught.value.body == '{"detail":"Path not found"}'
     assert "Failed to forward request POST" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("status_code", "body", "expected"),
+    [
+        (410, "Failed to forward request: unable to connect to http://srv", IdeGYMNotFoundError),
+        (499, "Failed to forward request: client disconnected", IdeGYMCancelledError),
+        (500, "Failed to forward request to http://srv: ReadTimeout", IdeGYMServerError),
+        (500, '{"detail":"boom"}', IdeGYMSandboxError),
+        (422, '{"detail":"invalid"}', IdeGYMSandboxError),
+    ],
+)
+async def test_forwarding_keeps_orchestrator_statuses_on_the_normal_mapping(mocker, status_code, body, expected):
+    operations = _forwarding(mocker, ErrorResponse(status_code=status_code, body=body))
+
+    with pytest.raises(IdeGYMHTTPError) as caught:
+        await operations.forward_request("POST", 9, "tools/bash", client_id="c")
+
+    assert type(caught.value) is expected
+    assert caught.value.status_code == status_code
 
 
 async def test_start_server_failure_is_typed(mocker) -> None:

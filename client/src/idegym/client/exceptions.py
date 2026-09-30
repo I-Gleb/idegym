@@ -87,6 +87,17 @@ class IdeGYMServerError(IdeGYMHTTPError):
     """The orchestrator or the sandbox failed while handling the request."""
 
 
+class IdeGYMSandboxError(IdeGYMHTTPError):
+    """The sandbox itself answered a forwarded request with an error status.
+
+    The sandbox is alive — it produced the response — so this is kept apart from the status-based
+    types: an application-level ``404 Path not found`` from a live sandbox must not read as
+    ``IdeGYMNotFoundError``, which tells the caller the sandbox is gone and a new one is needed.
+    ``status_code`` and ``body`` are the sandbox's own. Failures the orchestrator reports about the
+    forward itself — the pod cannot be reached, the call was cancelled — keep their usual types.
+    """
+
+
 # 499 is nginx's non-standard "client closed request"; the orchestrator reuses it for a
 # cancelled background operation, so it has no HTTPStatus member to name it by.
 _CLIENT_CLOSED_REQUEST = 499

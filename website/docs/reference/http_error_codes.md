@@ -14,6 +14,11 @@ got no status at all raises `IdeGYMTimeoutError` for a client-side deadline, or
 `IdeGYMConnectionError` when the connection failed, both with `status_code` set to `None`. The
 full mapping is in [Client Library — Error Handling](client.md#error-handling).
 
+The IdeGYM Server codes further down reach the client through the orchestrator's forwarding
+endpoint, and are raised as `IdeGYMSandboxError` with the server's own status and body rather than
+through the mapping — a `404` from a live server's file API is not a missing sandbox. The
+forwarding endpoint's own `410` (pod unreachable) and `499` (cancelled) keep their usual types.
+
 A failure reported through an async operation's `result.status_code` is mapped the same way, with
 one exception: `start_server` treats a `429` from the background operation as "quota full, try
 again", and resubmits every `retry_delay_in_seconds` until its start wait runs out. Only then does
@@ -258,6 +263,12 @@ Unlike other async endpoints, `result` always carries the upstream HTTP status c
 | Cannot connect to server | `410` | `FAILED` |
 | Client disconnected mid-stream | `499` | `CANCELLED` |
 | Internal forwarding error | `500` | `FAILED` |
+
+The Python client raises the upstream 4xx and 5xx rows as `IdeGYMSandboxError`, carrying the
+upstream status and body, and the last three rows through the usual mapping: `410` as
+`IdeGYMNotFoundError`, `499` as `IdeGYMCancelledError`, and the orchestrator's own `500` as
+`IdeGYMServerError`. The synchronous `404`/`410` above, returned before anything is forwarded, are
+the orchestrator's too.
 
 ### Forwarding — `WS /api/ws-forward/{client_id}/{server_id}/ws`
 

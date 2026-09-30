@@ -9,6 +9,7 @@ from idegym.client.exceptions import (
     IdeGYMConnectionError,
     IdeGYMHTTPError,
     IdeGYMNotFoundError,
+    IdeGYMSandboxError,
     IdeGYMServerError,
     IdeGYMTimeoutError,
 )
@@ -31,6 +32,7 @@ __all__ = (
     "IdeGYMConnectionError",
     "IdeGYMHTTPError",
     "IdeGYMNotFoundError",
+    "IdeGYMSandboxError",
     "IdeGYMServerError",
     "IdeGYMTimeoutError",
     "SharedIdeGYMClient",

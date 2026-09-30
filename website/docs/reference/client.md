@@ -813,7 +813,8 @@ except IdeGYMHTTPError as e:
 | `IdeGYMConnectionError` | none — no response | The connection failed or broke off, e.g. while the orchestrator restarts; retry with backoff |
 | `IdeGYMBusyError` | 429, 503 | Rate-limited or out of capacity; retry with backoff |
 | `IdeGYMCancelledError` | 499 | Cancelled before finishing, usually by a disconnect |
-| `IdeGYMServerError` | 5xx | The orchestrator or the sandbox failed |
+| `IdeGYMServerError` | 5xx | The orchestrator failed, or a sandbox call failed on its way through it |
+| `IdeGYMSandboxError` | any error the sandbox itself returned | The sandbox is alive and answered a forwarded call (a tool, reward or file request) with an error; read `status_code` and `body` |
 
 All of them subclass `IdeGYMHTTPError`, which subclasses both `IdeGYMException` and
 `RuntimeError`, and the message text is unchanged from before the typed exceptions existed — so
@@ -827,6 +828,14 @@ server-start wait. `IdeGYMTimeoutError` is also a builtin `TimeoutError`, which 
 deadlines raised before, so an existing `except TimeoutError` still catches them. The underlying
 `httpx` exception, when there is one, is chained as `__cause__`, so a `ConnectTimeout` can still be
 told apart from a `ReadTimeout` or a `PoolTimeout`.
+
+A call forwarded to the sandbox — `execute_bash`, a file transfer, `forward()` — can fail in two
+places, and the type says which. When the orchestrator cannot reach the pod it reports `410`, raised
+as `IdeGYMNotFoundError`: the sandbox really is gone. When the sandbox answers with an error of its
+own — `404 Path not found` for a missing file, say — the status it sent is relayed as
+`IdeGYMSandboxError`, whatever it is, so a missing file never reads as a missing sandbox. Before
+`IdeGYMSandboxError` existed a relayed status went through the table above; code that caught, for
+instance, `IdeGYMServerError` for a sandbox-side `500` should catch `IdeGYMSandboxError` too.
 
 A transport failure that produced no response at all — a refused or reset connection, a broken
 exchange — raises `IdeGYMConnectionError`, again with `status_code is None` and the `httpx` error
