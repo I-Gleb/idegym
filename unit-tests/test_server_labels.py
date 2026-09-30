@@ -98,6 +98,31 @@ async def test_managed_annotations_survive_a_collision(mocker, api_client) -> No
     assert annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] == "false"
 
 
+async def test_a_caller_snapshot_annotation_never_reaches_the_pod(mocker, api_client) -> None:
+    """With no snapshot requested, a caller's ps-name would restore a snapshot nobody recorded."""
+    objects = await _deploy(
+        mocker,
+        api_client,
+        extra_annotations={"podsnapshot.gke.io/ps-name": "someone-elses-snapshot", "example.com/task": "TASK-1"},
+    )
+
+    annotations = objects["deployment"].spec.template.metadata.annotations
+    assert "podsnapshot.gke.io/ps-name" not in annotations
+    assert annotations["example.com/task"] == "TASK-1"
+
+
+async def test_a_requested_snapshot_wins_over_a_caller_snapshot_annotation(mocker, api_client) -> None:
+    objects = await _deploy(
+        mocker,
+        api_client,
+        snapshot_tag="the-recorded-one",
+        extra_annotations={"podsnapshot.gke.io/ps-name": "someone-elses-snapshot"},
+    )
+
+    annotations = objects["deployment"].spec.template.metadata.annotations
+    assert annotations["podsnapshot.gke.io/ps-name"] == "the-recorded-one"
+
+
 async def test_the_selector_never_picks_up_caller_labels(mocker, api_client) -> None:
     """A selector that grew a caller label would stop matching pods started without it."""
     objects = await _deploy(mocker, api_client, extra_labels={"team": "research"})
@@ -156,9 +181,38 @@ def test_a_key_that_merely_resembles_a_managed_one_is_accepted(key) -> None:
     assert _request(labels={key: "value"}).labels == {key: "value"}
 
 
-def test_an_annotation_may_use_a_managed_looking_key() -> None:
+def test_an_annotation_may_use_a_managed_label_prefix() -> None:
     """Annotations carry no selector weight, so the label reservation does not apply to them."""
     assert _request(annotations={"app.kubernetes.io/notes": "long text"}).annotations
+
+
+@pytest.mark.parametrize(
+    "reserved",
+    [
+        "cluster-autoscaler.kubernetes.io/safe-to-evict",
+        "podsnapshot.gke.io/ps-name",
+        "podsnapshot.gke.io/anything",
+        "prometheus.io/scrape",
+        "prometheus.io/port",
+    ],
+)
+def test_a_managed_annotation_key_is_rejected(reserved) -> None:
+    with pytest.raises(ValidationError, match="annotations may not set IdeGYM-managed keys"):
+        _request(annotations={reserved: "mine"})
+
+
+def test_the_annotation_error_names_every_offending_key() -> None:
+    with pytest.raises(ValidationError) as caught:
+        _request(annotations={"prometheus.io/scrape": "false", "podsnapshot.gke.io/ps-name": "x", "team": "y"})
+
+    assert "annotations may not set IdeGYM-managed keys: podsnapshot.gke.io/ps-name, prometheus.io/scrape" in str(
+        caught.value
+    )
+
+
+@pytest.mark.parametrize("key", ["cluster-autoscaler.kubernetes.io/other", "example.com/prometheus.io", "gke.io/x"])
+def test_an_annotation_that_merely_resembles_a_managed_one_is_accepted(key) -> None:
+    assert _request(annotations={key: "value"}).annotations == {key: "value"}
 
 
 @pytest.mark.parametrize(

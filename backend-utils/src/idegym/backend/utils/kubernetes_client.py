@@ -14,7 +14,7 @@ from idegym.api import __version__
 from idegym.api.config import SchedulingConfig
 from idegym.api.download import DownloadRequest
 from idegym.api.exceptions import ResourceDeletionFailedException
-from idegym.api.orchestrator.servers import ServerKind
+from idegym.api.orchestrator.servers import ServerKind, is_managed_annotation_key
 from idegym.api.paths import API_BASE_PATH, ActuatorPath, OpenenvPath
 from idegym.api.status import Status
 from idegym.api.type import ConditionStatus, Duration
@@ -331,8 +331,16 @@ async def deploy_server(
     image_pull_secret = V1LocalObjectReference(name="regcred")
     # Caller metadata goes on first so a managed key always wins: the selectors that address the
     # pod are built from the managed labels, and prometheus scraping from the managed annotations.
+    # A managed annotation IdeGYM does not set this time is dropped rather than passed through: the
+    # request model rejects them, but a 'podsnapshot.gke.io/ps-name' that slipped past it would
+    # restore the pod from a snapshot nobody recorded, so this layer does not rely on that.
+    caller_annotations = {
+        key: value for key, value in (extra_annotations or {}).items() if not is_managed_annotation_key(key)
+    }
+    if dropped := sorted((extra_annotations or {}).keys() - caller_annotations.keys()):
+        logger.warning("Dropped IdeGYM-managed annotations from the caller", server=server_name, keys=dropped)
     annotations = {
-        **(extra_annotations or {}),
+        **caller_annotations,
         "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
         **prometheus_annotations,
     }

@@ -186,8 +186,11 @@ to be one — a Kubernetes label value is capped at 63 characters.
 Keys IdeGYM manages are **rejected**, not silently overwritten: `app`, anything under
 `app.kubernetes.io/`, and anything under `idegym.jetbrains.com/`. Those are what the Service
 selector, the PodDisruptionBudget and the watcher's pod queries match on, so taking one over
-would detach the sandbox from the machinery that manages it. Annotations carry no selector
-weight and are not restricted.
+would detach the sandbox from the machinery that manages it. The annotations IdeGYM sets are
+rejected the same way: `cluster-autoscaler.kubernetes.io/safe-to-evict`, anything under
+`prometheus.io/`, and anything under `podsnapshot.gke.io/`. The last one matters most, since it
+names the GKE pod snapshot a pod is restored from. Any other annotation key is accepted,
+including ones under the managed label prefixes, because annotations carry no selector weight.
 
 Two things they deliberately do not affect. They are not part of the snapshot hash — they
 describe who asked for a sandbox, not what is in it, and a per-job label would otherwise make
