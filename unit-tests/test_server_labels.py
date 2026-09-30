@@ -14,46 +14,15 @@ from idegym.api.orchestrator.servers import (
     is_managed_label_key,
 )
 from idegym.backend.utils import kubernetes_client as kc
-from kubernetes_asyncio.client import ApiClient
 from pydantic import ValidationError
 
 
-@pytest.fixture
-async def api_client():
-    client = ApiClient()
-    try:
-        yield client
-    finally:
-        await client.close()
-
-
-def _patch_clients(mocker, api_client):
-    deployment_result = mocker.MagicMock()
-    deployment_result.api_version = "apps/v1"
-    deployment_result.kind = "Deployment"
-    deployment_result.metadata.name = "srv"
-    deployment_result.metadata.uid = "uid-123"
-
-    apps = mocker.MagicMock()
-    apps.api_client = api_client
-    apps.create_namespaced_deployment = mocker.AsyncMock(return_value=deployment_result)
-    core = mocker.MagicMock()
-    core.create_namespaced_service = mocker.AsyncMock()
-    policy = mocker.MagicMock()
-    policy.create_namespaced_pod_disruption_budget = mocker.AsyncMock()
-
-    clients = (apps, mocker.MagicMock(), core, policy, mocker.MagicMock())
-    mocker.patch.object(kc, "create_clients", mocker.AsyncMock(return_value=clients))
-    return apps, core, policy
-
-
-async def _deploy(mocker, api_client, **kwargs):
-    apps, core, policy = _patch_clients(mocker, api_client)
+async def _deploy(kube_clients, **kwargs):
     await kc.deploy_server(image_tag="img:latest", server_name="srv", namespace="ns", **kwargs)
     return {
-        "deployment": apps.create_namespaced_deployment.call_args.kwargs["body"],
-        "service": core.create_namespaced_service.call_args.kwargs["body"],
-        "pdb": policy.create_namespaced_pod_disruption_budget.call_args.kwargs["body"],
+        "deployment": kube_clients.apps.create_namespaced_deployment.call_args.kwargs["body"],
+        "service": kube_clients.core.create_namespaced_service.call_args.kwargs["body"],
+        "pdb": kube_clients.policy.create_namespaced_pod_disruption_budget.call_args.kwargs["body"],
     }
 
 
@@ -62,8 +31,8 @@ async def _deploy(mocker, api_client, **kwargs):
 # --------------------------------------------------------------------------------------
 
 
-async def test_extra_labels_land_on_every_object_an_operator_queries(mocker, api_client) -> None:
-    objects = await _deploy(mocker, api_client, extra_labels={"team": "research", "job": "run-42"})
+async def test_extra_labels_land_on_every_object_an_operator_queries(kube_clients) -> None:
+    objects = await _deploy(kube_clients, extra_labels={"team": "research", "job": "run-42"})
 
     for name in ("deployment", "service", "pdb"):
         labels = objects[name].metadata.labels
@@ -72,18 +41,17 @@ async def test_extra_labels_land_on_every_object_an_operator_queries(mocker, api
     assert objects["deployment"].spec.template.metadata.labels["team"] == "research"
 
 
-async def test_extra_annotations_land_on_the_pod(mocker, api_client) -> None:
-    objects = await _deploy(mocker, api_client, extra_annotations={"example.com/task": "TASK-1"})
+async def test_extra_annotations_land_on_the_pod(kube_clients) -> None:
+    objects = await _deploy(kube_clients, extra_annotations={"example.com/task": "TASK-1"})
 
     annotations = objects["deployment"].spec.template.metadata.annotations
     assert annotations["example.com/task"] == "TASK-1"
 
 
-async def test_managed_labels_survive_a_collision(mocker, api_client) -> None:
+async def test_managed_labels_survive_a_collision(kube_clients) -> None:
     """The API rejects these, but the deploy layer must not depend on that to stay correct."""
     objects = await _deploy(
-        mocker,
-        api_client,
+        kube_clients,
         extra_labels={"app": "hijacked", "app.kubernetes.io/part-of": "somebody-else"},
     )
 
@@ -92,10 +60,9 @@ async def test_managed_labels_survive_a_collision(mocker, api_client) -> None:
     assert labels["app.kubernetes.io/part-of"] == "idegym"
 
 
-async def test_managed_annotations_survive_a_collision(mocker, api_client) -> None:
+async def test_managed_annotations_survive_a_collision(kube_clients) -> None:
     objects = await _deploy(
-        mocker,
-        api_client,
+        kube_clients,
         extra_annotations={"cluster-autoscaler.kubernetes.io/safe-to-evict": "true"},
     )
 
@@ -103,11 +70,10 @@ async def test_managed_annotations_survive_a_collision(mocker, api_client) -> No
     assert annotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] == "false"
 
 
-async def test_a_caller_snapshot_annotation_never_reaches_the_pod(mocker, api_client) -> None:
+async def test_a_caller_snapshot_annotation_never_reaches_the_pod(kube_clients) -> None:
     """With no snapshot requested, a caller's ps-name would restore a snapshot nobody recorded."""
     objects = await _deploy(
-        mocker,
-        api_client,
+        kube_clients,
         extra_annotations={"podsnapshot.gke.io/ps-name": "someone-elses-snapshot", "example.com/task": "TASK-1"},
     )
 
@@ -116,10 +82,9 @@ async def test_a_caller_snapshot_annotation_never_reaches_the_pod(mocker, api_cl
     assert annotations["example.com/task"] == "TASK-1"
 
 
-async def test_a_requested_snapshot_wins_over_a_caller_snapshot_annotation(mocker, api_client) -> None:
+async def test_a_requested_snapshot_wins_over_a_caller_snapshot_annotation(kube_clients) -> None:
     objects = await _deploy(
-        mocker,
-        api_client,
+        kube_clients,
         snapshot_tag="the-recorded-one",
         extra_annotations={"podsnapshot.gke.io/ps-name": "someone-elses-snapshot"},
     )
@@ -128,17 +93,17 @@ async def test_a_requested_snapshot_wins_over_a_caller_snapshot_annotation(mocke
     assert annotations["podsnapshot.gke.io/ps-name"] == "the-recorded-one"
 
 
-async def test_the_selector_never_picks_up_caller_labels(mocker, api_client) -> None:
+async def test_the_selector_never_picks_up_caller_labels(kube_clients) -> None:
     """A selector that grew a caller label would stop matching pods started without it."""
-    objects = await _deploy(mocker, api_client, extra_labels={"team": "research"})
+    objects = await _deploy(kube_clients, extra_labels={"team": "research"})
 
     assert "team" not in objects["deployment"].spec.selector.match_labels
     assert "team" not in objects["service"].spec.selector
     assert "team" not in objects["pdb"].spec.selector.match_labels
 
 
-async def test_no_extra_metadata_leaves_the_objects_as_before(mocker, api_client) -> None:
-    objects = await _deploy(mocker, api_client)
+async def test_no_extra_metadata_leaves_the_objects_as_before(kube_clients) -> None:
+    objects = await _deploy(kube_clients)
 
     assert set(objects["deployment"].metadata.labels) == {
         "app",
@@ -151,11 +116,9 @@ async def test_no_extra_metadata_leaves_the_objects_as_before(mocker, api_client
 
 
 @pytest.mark.parametrize("server_kind", list(ServerKind))
-async def test_every_key_deploy_server_sets_is_reserved_from_callers(mocker, api_client, server_kind) -> None:
+async def test_every_key_deploy_server_sets_is_reserved_from_callers(kube_clients, server_kind) -> None:
     """The drift guard: a managed key the validators do not reserve is one a caller can take over."""
-    objects = await _deploy(
-        mocker, api_client, server_kind=server_kind, snapshot_id="group-1", snapshot_tag="snapshot-1"
-    )
+    objects = await _deploy(kube_clients, server_kind=server_kind, snapshot_id="group-1", snapshot_tag="snapshot-1")
 
     template = objects["deployment"].spec.template.metadata
     labels = {
