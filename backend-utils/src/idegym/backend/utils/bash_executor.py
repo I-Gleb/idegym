@@ -15,6 +15,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Optional
 
+from idegym.api.exceptions import IdeGYMException
 from idegym.backend import resources
 from idegym.backend.utils.environment import cleanenv
 from idegym.utils.logging import get_logger
@@ -66,7 +67,7 @@ os.execve(argv[0], argv, dict(entry.split(b"=", 1) for entry in entries if entry
 """
 
 
-class BashExecutorError(Exception):
+class BashExecutorError(IdeGYMException):
     pass
 
 
@@ -74,15 +75,23 @@ class BashCommandExecutionTimeoutError(BashExecutorError):
     pass
 
 
-class BashExecutorUnknownUserError(BashExecutorError):
+class BashExecutorRequestError(BashExecutorError):
+    """Caller-supplied context the executor cannot honour: a bad request, not a server fault.
+
+    The server maps this whole family to 400 in one handler, so every caller of the executor —
+    the tools router, rewards, project reset — reports it the same way.
+    """
+
+
+class BashExecutorUnknownUserError(BashExecutorRequestError):
     """The requested ``user`` does not exist in the container."""
 
 
-class BashExecutorWorkingDirectoryError(BashExecutorError):
+class BashExecutorWorkingDirectoryError(BashExecutorRequestError):
     """The requested ``cwd`` does not exist or is not a directory."""
 
 
-class BashExecutorUserSwitchError(BashExecutorError):
+class BashExecutorUserSwitchError(BashExecutorRequestError):
     """The server can neither ``runuser`` (it is not root) nor ``sudo`` without a password."""
 
 
