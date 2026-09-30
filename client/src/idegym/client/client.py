@@ -254,6 +254,18 @@ class IdeGYMClient:
 
     async def __aenter__(self):
         assert not self._http_client.is_closed, "Can not communicate using a closed client!"
+        try:
+            await self._register()
+        except BaseException:
+            # `async with` does not call __aexit__ when __aenter__ raises, so this is the only
+            # chance to release the client this object built — otherwise its sockets leak with a
+            # ResourceWarning. There is no registration to stop.
+            self._stop_heartbeat()
+            await self._release_http_client()
+            raise
+        return self
+
+    async def _register(self) -> None:
         registration_response = await self._register_client(self.name, self._utils.current_namespace, self.nodes_count)
         if isinstance(registration_response, ErrorResponse):
             raise http_error(
@@ -267,7 +279,6 @@ class IdeGYMClient:
                 self._start_heartbeat_task()
         else:
             raise RuntimeError(f"Failed to register client: {registration_response.model_dump()}")
-        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._stop_heartbeat()
@@ -280,12 +291,15 @@ class IdeGYMClient:
             if exc_type is None:
                 raise
         finally:
-            if self._owns_http_client:
-                uninstrument(
-                    client=self._http_client,
-                    config=self._otel_config,
-                )
-                await self._http_client.aclose()
+            await self._release_http_client()
+
+    async def _release_http_client(self) -> None:
+        if self._owns_http_client:
+            uninstrument(
+                client=self._http_client,
+                config=self._otel_config,
+            )
+            await self._http_client.aclose()
 
     async def health_check(self) -> HealthCheckResponse:
         response_raw = await self._utils.make_request("GET", "/health")

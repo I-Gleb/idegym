@@ -404,6 +404,8 @@ async def test_a_failed_registration_raises_the_typed_error(mocker) -> None:
 
     client = IdeGYMClient.__new__(IdeGYMClient)
     client._http_client = mocker.MagicMock(is_closed=False)
+    client._owns_http_client = False
+    client._heartbeat_task = None
     client._utils = mocker.MagicMock(current_namespace="idegym")
     client.name, client.nodes_count = "run", 0
     client._register_client = mocker.AsyncMock(return_value=ErrorResponse(status_code=403, body="namespace denied"))

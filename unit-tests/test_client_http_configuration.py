@@ -109,3 +109,34 @@ async def test_a_supplied_client_survives_exit(unregistered_exit) -> None:
 
     assert not supplied.is_closed
     await supplied.aclose()
+
+
+def _failing_registration(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(500, text="registration exploded")
+
+
+async def test_a_failed_entry_releases_the_client_idegym_built(mocker) -> None:
+    from idegym.client.exceptions import IdeGYMServerError
+
+    uninstrumented = mocker.patch("idegym.client.client.uninstrument")
+    stop_client = mocker.patch.object(IdeGYMClient, "_stop_client", mocker.AsyncMock())
+    client = _build(transport=httpx.MockTransport(_failing_registration))
+
+    with pytest.raises(IdeGYMServerError, match="registration exploded"):
+        await client.__aenter__()
+
+    assert client._http_client.is_closed
+    uninstrumented.assert_called_once()
+    # Nothing was registered, so there is nothing to deregister.
+    stop_client.assert_not_awaited()
+
+
+async def test_a_failed_entry_leaves_a_supplied_client_open() -> None:
+    supplied = httpx.AsyncClient(base_url="http://idegym.test", transport=httpx.MockTransport(_failing_registration))
+    client = _build(http_client=supplied)
+
+    with pytest.raises(RuntimeError):
+        await client.__aenter__()
+
+    assert not supplied.is_closed
+    await supplied.aclose()
