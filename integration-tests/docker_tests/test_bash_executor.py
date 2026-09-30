@@ -234,8 +234,9 @@ class TestBashExecutor:
     @pytest.mark.asyncio
     async def test_non_utf8_output_is_replaced_and_exit_code_survives(self):
         executor = BashExecutor()
-        stdout, _stderr, exit_code = await executor.execute_bash_command("printf '\\xff\\xfe'; exit 3")
+        stdout, _stderr, exit_code = await executor.execute_bash_command("printf '\\377\\376'; exit 3")
 
+        # Each invalid byte becomes its own U+FFFD, so two bytes give two replacement characters.
         assert stdout == "��"
         assert exit_code == 3
 
