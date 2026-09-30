@@ -306,7 +306,8 @@ class ServerOperations:
         client_id: Optional[UUID] = None,
         namespace: Optional[str] = None,
         polling_config: PollingConfig = PollingConfig(),
-    ) -> CreateSnapshotResponse | ErrorResponse:
+    ) -> CreateSnapshotResponse:
+        """Snapshot the server's pod, raising an ``IdeGYMHTTPError`` if the snapshot fails."""
         client_id = self._utils.validate_client_id(client_id)
         namespace = self._utils.validate_namespace(namespace)
         request = CreateSnapshotRequest(client_id=client_id, namespace=namespace, server_id=server_id)
@@ -314,12 +315,13 @@ class ServerOperations:
         response: CreateSnapshotResponse = self._utils.parse_response(
             response_raw=response_raw, model_class=CreateSnapshotResponse
         )
-        return await self._utils.wait_for_async_operation_to_end(
+        result = await self._utils.wait_for_async_operation_to_end(
             operation_id=response.operation_id,
             success_response_model=CreateSnapshotResponse,
             error_response_model=ErrorResponse,
             polling_config=polling_config,
         )
+        return raise_for_error_response(result, f"Snapshotting server {server_id}")
 
     async def prepare_snapshots(
         self,

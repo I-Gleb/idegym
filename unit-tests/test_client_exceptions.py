@@ -413,3 +413,62 @@ async def test_a_failed_registration_raises_the_typed_error(mocker) -> None:
 
     assert (caught.value.status_code, caught.value.body) == (403, "namespace denied")
     assert "Failed to register client" in str(caught.value)
+
+
+async def test_snapshot_server_raises_instead_of_returning_the_failure(mocker) -> None:
+    operations = _server_operations(mocker, ErrorResponse(status_code=500, body="snapshot failed"))
+    operations._utils.make_request.return_value = {"server_id": 7, "server_name": "srv", "operation_id": 3}
+
+    with pytest.raises(IdeGYMServerError, match="Snapshotting server 7 failed"):
+        await operations.snapshot_server(server_id=7, client_id=uuid4())
+
+
+async def test_stop_client_raises_instead_of_returning_the_failure(mocker) -> None:
+    from idegym.client.operations.clients import ClientOperations
+
+    utils = mocker.MagicMock()
+    utils.validate_client_id.side_effect = lambda client_id: client_id
+    utils.validate_namespace.side_effect = lambda namespace: namespace or "idegym"
+    utils.make_request = mocker.AsyncMock(return_value={"operation_id": 3})
+    utils.parse_response.side_effect = lambda response_raw, model_class: model_class.model_validate(response_raw)
+    utils.wait_for_async_operation_to_end = mocker.AsyncMock(
+        return_value=ErrorResponse(status_code=500, body="could not delete pods")
+    )
+    client_id = uuid4()
+
+    with pytest.raises(IdeGYMServerError, match=f"Stopping client {client_id} failed"):
+        await ClientOperations(utils=utils).stop_client(client_id=client_id)
+
+
+def _registered_client(mocker, stop_error: Optional[Exception]):
+    from idegym.client.client import IdeGYMClient
+
+    client = IdeGYMClient.__new__(IdeGYMClient)
+    client._heartbeat_task = None
+    client._http_client = mocker.MagicMock(aclose=mocker.AsyncMock())
+    client._owns_http_client = True
+    client._otel_config = mocker.MagicMock()
+    client._utils = mocker.MagicMock(current_client_id=uuid4())
+    client._stop_client = mocker.AsyncMock(side_effect=stop_error)
+    mocker.patch("idegym.client.client.uninstrument")
+    return client
+
+
+async def test_a_failed_deregistration_is_raised_when_nothing_else_is(mocker) -> None:
+    client = _registered_client(mocker, http_error("could not delete pods", status_code=500))
+
+    with pytest.raises(IdeGYMServerError, match="could not delete pods"):
+        await client.__aexit__(None, None, None)
+
+    client._http_client.aclose.assert_awaited_once()
+
+
+async def test_a_failed_deregistration_does_not_mask_the_body_exception(mocker) -> None:
+    client = _registered_client(mocker, http_error("could not delete pods", status_code=500))
+    body_error = ValueError("body failed")
+
+    # __aexit__ returning normally lets `async with` re-raise the body's exception.
+    assert not await client.__aexit__(ValueError, body_error, None)
+
+    client._stop_client.assert_awaited_once()
+    client._http_client.aclose.assert_awaited_once()

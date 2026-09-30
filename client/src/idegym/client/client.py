@@ -257,13 +257,21 @@ class IdeGYMClient:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         self._stop_heartbeat()
-        await self._stop_client()
-        uninstrument(
-            client=self._http_client,
-            config=self._otel_config,
-        )
-        if self._owns_http_client:
-            await self._http_client.aclose()
+        try:
+            await self._stop_client()
+        except Exception:
+            # A failed deregistration leaks every pod the client owns, so it is never silent. It
+            # is raised only when nothing else is: the body's exception says what went wrong first.
+            logger.exception("Failed to deregister client", client_id=self._utils.current_client_id)
+            if exc_type is None:
+                raise
+        finally:
+            uninstrument(
+                client=self._http_client,
+                config=self._otel_config,
+            )
+            if self._owns_http_client:
+                await self._http_client.aclose()
 
     async def health_check(self) -> HealthCheckResponse:
         response_raw = await self._utils.make_request("GET", "/health")
@@ -287,7 +295,7 @@ class IdeGYMClient:
         client_id: Optional[UUID] = None,
         namespace: Optional[str] = None,
         polling_config: PollingConfig = PollingConfig(),
-    ) -> RegisteredClientResponse | ErrorResponse:
+    ) -> RegisteredClientResponse:
         """Stop the client, terminating all its running servers in the process."""
         if not client_id:
             self._stop_heartbeat()
