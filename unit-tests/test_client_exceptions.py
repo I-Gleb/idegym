@@ -167,11 +167,11 @@ async def test_a_request_timeout_while_polling_is_not_rewrapped() -> None:
 
 async def test_start_server_deadline_raises_a_typed_timeout(mocker) -> None:
     operations = _server_operations(mocker, None)
+    # The first reading starts the clock, the second is already past the deadline.
+    mocker.patch("idegym.client.operations.servers.time", mocker.MagicMock(time=mocker.MagicMock(side_effect=[0, 1e6])))
 
     with pytest.raises(IdeGYMTimeoutError, match="Server start timed out"):
-        await operations.start_server(
-            image_tag="registry.test/env:latest", client_id=uuid4(), server_start_wait_timeout_in_seconds=0
-        )
+        await operations.start_server(image_tag="registry.test/env:latest", client_id=uuid4())
 
 
 async def test_a_gone_sandbox_is_distinguishable_from_a_busy_control_plane() -> None:
@@ -377,7 +377,8 @@ async def test_start_server_raises_busy_when_the_quota_stays_exhausted(mocker) -
             image_tag="registry.test/env:latest",
             client_id=client_id,
             server_start_wait_timeout_in_seconds=10,
-            retry_delay_in_seconds=15,
+            # Longer than the client's whole deadline (the timeout plus its grace period).
+            retry_delay_in_seconds=100,
         )
 
     assert (caught.value.status_code, caught.value.body) == (429, "quota exhausted")

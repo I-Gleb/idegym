@@ -35,6 +35,11 @@ class PollingConfig(BaseModel):
     )
 
 
+# How long past its deadline a poll may still take to answer. The final poll is sent at the
+# deadline, so without this a status request would have no time to complete; it only matters
+# when a request hangs, since a prompt answer ends the wait either way.
+_FINAL_POLL_ALLOWANCE_IN_SEC = 10.0
+
 S = TypeVar("S", bound=BaseModel)
 E = TypeVar("E", bound=BaseModel)
 
@@ -201,16 +206,28 @@ class HTTPUtils:
         Returns an instance of ``success_response_model`` on success, ``error_response_model`` on
         failure or cancellation, or the raw result string if no model is provided.
         Raises ``IdeGYMTimeoutError`` if ``polling_config.wait_timeout_in_sec`` is exceeded.
+
+        No backoff sleep is allowed to run past the deadline: the last one is cut short so that
+        one final poll lands on the deadline itself. Otherwise, with a long backoff, the last poll
+        before the deadline could come a minute early, and an operation that succeeded in that
+        gap would be reported as timed out — orphaning, say, a server that did start. A request
+        that hangs is bounded separately, by a short allowance past the deadline.
         """
         polling_config = polling_config or PollingConfig()
         logger.debug(f"Polling async operation status with ID {operation_id}")
 
-        deadline = asyncio.timeout(polling_config.wait_timeout_in_sec)
+        wait_timeout = polling_config.wait_timeout_in_sec
+        hard_stop = asyncio.timeout(wait_timeout + _FINAL_POLL_ALLOWANCE_IN_SEC)
         try:
-            async with deadline:
+            async with hard_stop:
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + wait_timeout
                 retry = 0
                 while True:
-                    await sleep(self._calculate_wait_time_with_jitter(retry=retry, polling_config=polling_config))
+                    remaining = deadline - loop.time()
+                    delay = self._calculate_wait_time_with_jitter(retry=retry, polling_config=polling_config)
+                    last_poll = delay >= remaining
+                    await sleep(max(0.0, min(delay, remaining)))
 
                     full_status_raw = await self.make_request("GET", f"/api/operations/status/{operation_id}")
                     full_status = AsyncOperationStatusResponse.model_validate(full_status_raw)
@@ -230,15 +247,18 @@ class HTTPUtils:
                             result=full_status.result, short_status=short_status, response_model=error_response_model
                         )
 
+                    if last_poll:
+                        break
                     retry += 1
         except TimeoutError as ex:
             # A request timing out inside the loop is already an IdeGYMTimeoutError; only the
-            # polling deadline itself needs translating.
-            if not deadline.expired():
+            # hard stop itself needs translating.
+            if not hard_stop.expired():
                 raise
             raise IdeGYMTimeoutError(
-                f"Async operation {operation_id} did not finish within {polling_config.wait_timeout_in_sec} seconds"
+                f"Async operation {operation_id} did not finish within {wait_timeout} seconds"
             ) from ex
+        raise IdeGYMTimeoutError(f"Async operation {operation_id} did not finish within {wait_timeout} seconds")
 
     def _calculate_wait_time_with_jitter(self, retry: int, polling_config: PollingConfig) -> float:
         if retry == 0:

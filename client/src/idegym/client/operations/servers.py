@@ -1,3 +1,4 @@
+import math
 import time
 from asyncio import sleep
 from http import HTTPStatus
@@ -52,6 +53,21 @@ from idegym.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# The orchestrator's own start timeout begins only after its database work and the deploy, and
+# is followed by a diagnosis of what the pod was doing. The client therefore waits this much
+# longer than the timeout it sends, so that diagnosis — not a bare client-side timeout — is what
+# reaches the caller.
+_START_DEADLINE_GRACE_MIN_SECONDS = 60.0
+_START_DEADLINE_GRACE_FRACTION = 0.1
+
+
+def _client_start_deadline(server_start_wait_timeout_in_seconds: float) -> float:
+    """How long the client waits for a start that the server was given ``server_start_wait_timeout_in_seconds`` for."""
+    grace = max(
+        _START_DEADLINE_GRACE_MIN_SECONDS, _START_DEADLINE_GRACE_FRACTION * server_start_wait_timeout_in_seconds
+    )
+    return server_start_wait_timeout_in_seconds + grace
+
 
 class ServerOperations:
     def __init__(self, utils: HTTPUtils, project: ProjectOperations) -> None:
@@ -88,18 +104,24 @@ class ServerOperations:
         client_id = self._utils.validate_client_id(client_id)
         namespace = self._utils.validate_namespace(namespace)
 
+        # The server is given `server_start_wait_timeout_in_seconds`; the client allows itself a
+        # grace period on top, for the POST, the polling, and the 429 retries alike.
+        client_deadline = _client_start_deadline(server_start_wait_timeout_in_seconds)
         start_time = time.time()
         attempts = 0
         rate_limited: Optional[ErrorResponse] = None
 
         while True:
             elapsed_time = time.time() - start_time
-            if elapsed_time >= server_start_wait_timeout_in_seconds:
+            if elapsed_time >= client_deadline:
                 if rate_limited is not None:
-                    raise self._still_rate_limited(rate_limited, attempts, server_start_wait_timeout_in_seconds)
-                raise IdeGYMTimeoutError(f"Server start timed out after {server_start_wait_timeout_in_seconds} seconds")
+                    raise self._still_rate_limited(rate_limited, attempts, client_deadline)
+                raise IdeGYMTimeoutError(
+                    f"Server start timed out after {client_deadline:g} seconds "
+                    f"(the server was given {server_start_wait_timeout_in_seconds})"
+                )
 
-            remaining_time = int(server_start_wait_timeout_in_seconds - elapsed_time)
+            remaining_time = math.ceil(client_deadline - elapsed_time)
 
             request = StartServerRequest(
                 client_id=client_id,
@@ -160,8 +182,8 @@ class ServerOperations:
                 if response.status_code == HTTPStatus.TOO_MANY_REQUESTS.value:
                     attempts += 1
                     rate_limited = response
-                    if time.time() - start_time + retry_delay_in_seconds >= server_start_wait_timeout_in_seconds:
-                        raise self._still_rate_limited(response, attempts, server_start_wait_timeout_in_seconds)
+                    if time.time() - start_time + retry_delay_in_seconds >= client_deadline:
+                        raise self._still_rate_limited(response, attempts, client_deadline)
 
                     logger.warning(
                         f"Received 429 Too Many Requests error (attempt {attempts}). "
@@ -177,7 +199,7 @@ class ServerOperations:
         # timeout would hide it from `except IdeGYMBusyError: back off`, which is the handler that
         # knows what to do about an exhausted quota.
         return IdeGYMBusyError(
-            f"Server start still rate-limited after {attempts} attempt(s) in {timeout_in_seconds} seconds: "
+            f"Server start still rate-limited after {attempts} attempt(s) in {timeout_in_seconds:g} seconds: "
             f"{response.model_dump()}",
             status_code=response.status_code,
             body=response.body,
@@ -227,8 +249,14 @@ class ServerOperations:
             server_id=server_id,
             server_start_wait_timeout_in_seconds=server_start_wait_timeout_in_seconds,
         )
+        # As in start_server: the server gets the timeout, the client waits a grace period longer.
+        client_deadline = (
+            math.ceil(_client_start_deadline(server_start_wait_timeout_in_seconds))
+            if server_start_wait_timeout_in_seconds
+            else polling_config.wait_timeout_in_sec
+        )
         response_raw = await self._utils.make_request(
-            "POST", "/api/idegym-servers/restart", request, request_timeout=server_start_wait_timeout_in_seconds
+            "POST", "/api/idegym-servers/restart", request, request_timeout=client_deadline
         )
         response: ServerActionResponse = self._utils.parse_response(
             response_raw=response_raw, model_class=ServerActionResponse
@@ -239,7 +267,7 @@ class ServerOperations:
             error_response_model=ErrorResponse,
             polling_config=PollingConfig(
                 initial_delay_in_sec=polling_config.initial_delay_in_sec,
-                wait_timeout_in_sec=server_start_wait_timeout_in_seconds or polling_config.wait_timeout_in_sec,
+                wait_timeout_in_sec=client_deadline,
                 poll_interval_in_sec=polling_config.poll_interval_in_sec,
                 factor_for_exponential_wait=polling_config.factor_for_exponential_wait,
                 max_delay_for_exponential_wait_in_sec=polling_config.max_delay_for_exponential_wait_in_sec,

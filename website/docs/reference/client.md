@@ -173,6 +173,16 @@ multi-gigabyte environment image takes minutes to pull onto a node that has neve
 the previous 60-second default expired long before that. Raise it further for larger images
 rather than retrying into the same wall — a retry re-pulls onto the same cold node.
 
+The timeout is the orchestrator's: it is sent with the request, and the orchestrator waits that
+long for the pod. The client itself waits a grace period longer — the larger of 60 seconds and a
+tenth of the timeout, so 360 seconds in all by default — because the orchestrator's wait starts
+only after its own bookkeeping and the deploy, and ends with a look at the pod. That way the
+orchestrator's diagnosis, not a bare client-side timeout, is what reaches the caller. A `429`
+from a full quota is retried every `retry_delay_in_seconds` within the same client deadline. The
+client polls for the result with backoff, but never sleeps past its deadline: the last poll is
+made at the deadline itself, so a server that became ready shortly before it is still returned
+rather than left running unclaimed. `restart_server` uses the same deadline.
+
 When the wait does expire, the error says what the pod was doing, so a slow pull is not mistaken
 for a broken health endpoint:
 
