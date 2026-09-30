@@ -4,6 +4,8 @@ The regression is a build that dies deep inside Docker with `cp: no such file`, 
 care mostly about *when* the failure happens and *what it says*.
 """
 
+import subprocess
+
 import pytest
 from idegym.api.plugin import BuildContext
 from idegym.plugins.defaults.image import _REQUIRED_WORKSPACE_PATHS, IdeGYMServer
@@ -24,6 +26,14 @@ def _workspace(root, *, omit=()):
 
 def _context() -> BuildContext:
     return BuildContext(base="debian:bookworm-slim")
+
+
+def _run_git_check(dockerfile: str, source_root) -> subprocess.CompletedProcess:
+    """Run the rendered check step in a real shell, the way Docker would, against ``source_root``."""
+    start = dockerfile.index("RUN set -eu;")
+    step = dockerfile[start : dockerfile.index("\n\n", start)]
+    script = step.removeprefix("RUN ").replace("\\\n", "").replace("/tmp/idegym-src", str(source_root))
+    return subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=False)
 
 
 # --------------------------------------------------------------------------------------
@@ -71,10 +81,11 @@ def test_the_git_render_checks_the_checkout_before_copying_from_it() -> None:
     assert check_at < first_copy_at
 
 
-def test_the_git_check_names_the_url_and_the_ref() -> None:
+def test_the_git_check_names_the_url_and_the_ref(tmp_path) -> None:
     dockerfile = IdeGYMServer.from_git(url="https://example.test/idegym.git", ref="abc123").render(_context())
 
-    assert "IdeGYM source at https://example.test/idegym.git@abc123 is missing" in dockerfile
+    result = _run_git_check(dockerfile, _workspace(tmp_path, omit={"plugins"}))
+    assert "IdeGYM source at https://example.test/idegym.git@abc123 is missing: plugins" in result.stderr
 
 
 def test_the_git_check_covers_every_path_the_renderer_copies() -> None:
@@ -82,6 +93,33 @@ def test_the_git_check_covers_every_path_the_renderer_copies() -> None:
 
     loop = dockerfile[dockerfile.index("for path in ") : dockerfile.index("; do")]
     assert set(loop.removeprefix("for path in ").split()) == set(_REQUIRED_WORKSPACE_PATHS)
+
+
+def test_shell_metacharacters_in_the_url_and_ref_reach_the_message_verbatim(tmp_path) -> None:
+    """A '$', '"' or '$(...)' from the caller must be printed, never expanded or allowed to break the step."""
+    ref = 'v1"$(touch pwned)$HOME'
+    dockerfile = IdeGYMServer.from_git(url="https://example.test/id$egym.git", ref=ref).render(_context())
+
+    result = _run_git_check(dockerfile, tmp_path)
+
+    assert result.returncode == 1
+    assert f"IdeGYM source at https://example.test/id$egym.git@{ref} is missing: .python-version" in result.stderr
+    assert not (tmp_path / "pwned").exists()
+
+
+def test_the_git_check_passes_on_a_complete_checkout(tmp_path) -> None:
+    dockerfile = IdeGYMServer.from_git(url="https://example.test/idegym.git").render(_context())
+
+    assert _run_git_check(dockerfile, _workspace(tmp_path)).returncode == 0
+
+
+def test_credentials_in_the_url_stay_out_of_the_message_and_the_comment() -> None:
+    """The clone needs them; the build log line and the Dockerfile comment do not."""
+    dockerfile = IdeGYMServer.from_git(url="https://user:pa$$w0rd@example.test/idegym.git").render(_context())
+
+    assert "# Clone IdeGYM from https://***@example.test/idegym.git" in dockerfile
+    assert "'https://***@example.test/idegym.git@HEAD'" in dockerfile
+    assert dockerfile.count("pa$$w0rd") == 1  # only the clone itself
 
 
 def test_the_git_check_fails_the_build_rather_than_warning() -> None:
