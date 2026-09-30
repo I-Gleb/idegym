@@ -181,7 +181,11 @@ kubectl get pods -n idegym -l job=swe-bench-run-42
 
 They land on the Deployment, Pod, Service and PodDisruptionBudget. Use a label for anything you
 want to select or group by, and an annotation for metadata that is too long or too unstructured
-to be one — a Kubernetes label value is capped at 63 characters.
+to be one — a Kubernetes label value is capped at 63 characters. Both are checked against the
+Kubernetes syntax when the request is built: a key is an optional lowercase DNS prefix (at most
+253 characters) and a slash, then a name of at most 63 characters, and all annotation keys and
+values together may not exceed 256 KiB. A request that breaks these fails with a
+`ValidationError` instead of a server that fails to start.
 
 Keys IdeGYM manages are **rejected**, not silently overwritten: `app`, anything under
 `app.kubernetes.io/`, and anything under `idegym.jetbrains.com/`. Those are what the Service

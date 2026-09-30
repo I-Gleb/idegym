@@ -238,15 +238,68 @@ def test_an_annotation_that_merely_resembles_a_managed_one_is_accepted(key) -> N
     assert _request(annotations={key: "value"}).annotations == {key: "value"}
 
 
+_LONGEST_PREFIX = ".".join(["a" * 63] * 3 + ["a" * 61])  # 253 characters
+
+
 @pytest.mark.parametrize(
     "labels",
-    [{"": "value"}, {"Not A Key": "value"}, {"team": "x" * 64}],
+    [
+        {"": "value"},
+        {"Not A Key": "value"},
+        {"a" * 64: "value"},  # name segment over 63 characters
+        {"example.com/" + "a" * 64: "value"},
+        {"Example.COM/team": "value"},  # the prefix is a lowercase DNS subdomain
+        {"-example.com/team": "value"},
+        {"example..com/team": "value"},
+        {"example.com/": "value"},
+        {"/team": "value"},
+        {"a/b/team": "value"},
+        {"example.com/-team": "value"},
+        {_LONGEST_PREFIX + "a/team": "value"},  # prefix over 253 characters
+        {"team": "x" * 64},
+        {"team": "-x"},
+        {"team": "x."},
+        {"team": "a b"},
+    ],
 )
 def test_labels_are_held_to_the_kubernetes_syntax(labels) -> None:
     with pytest.raises(ValidationError):
         _request(labels=labels)
 
 
+@pytest.mark.parametrize(
+    "labels",
+    [
+        {"a" * 63: "value"},
+        {"Team_1.x-y": ""},
+        {"example.com/Team": "x" * 63},
+        {"sub-1.example.com/team": "a.b_c-d"},
+        {_LONGEST_PREFIX + "/team": "value"},
+    ],
+)
+def test_labels_at_the_kubernetes_limits_are_accepted(labels) -> None:
+    assert _request(labels=labels).labels == labels
+
+
+def test_a_node_selector_is_held_to_the_same_key_syntax() -> None:
+    """Node-selector keys are label keys, so the tightened syntax applies to them as well."""
+    assert _request(node_selector={"kubernetes.io/os": "linux"}).node_selector == {"kubernetes.io/os": "linux"}
+    with pytest.raises(ValidationError):
+        _request(node_selector={"Kubernetes.IO/os": "linux"})
+
+
+def test_annotations_are_held_to_the_total_size_limit() -> None:
+    """Kubernetes caps keys and values together at 256 KiB; over it, the deploy would fail late."""
+    with pytest.raises(ValidationError, match="annotations may total at most 262144 bytes"):
+        _request(annotations={"example.com/a": "x" * (128 * 1024), "example.com/b": "x" * (128 * 1024)})
+
+
+def test_annotation_size_is_counted_in_bytes() -> None:
+    with pytest.raises(ValidationError, match="annotations may total at most"):
+        _request(annotations={"example.com/notes": "é" * (128 * 1024 + 1)})
+
+
 def test_annotation_values_are_not_length_limited_like_labels() -> None:
     """An annotation is where metadata too long to be a label goes."""
     assert _request(annotations={"example.com/notes": "x" * 5000}).annotations
+    assert _request(annotations={"example.com/notes": "x" * (256 * 1024 - 20)}).annotations
