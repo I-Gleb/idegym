@@ -1,9 +1,16 @@
-"""Provide a disposable PostgreSQL database for integration tests."""
+"""PostgreSQL container fixtures, scoped to the database integration tests."""
 
 import os
 
-# The fixture stops its own container; disable Ryuk before importing testcontainers
-# because pauses between event loops can exceed its heartbeat timeout.
+# testcontainers ships a Ryuk sidecar that reaps tracked containers if its
+# heartbeat socket goes quiet for RYUK_RECONNECTION_TIMEOUT (default 10s).
+# With pytest-asyncio rebuilding event loops per test and pytest-randomly
+# reordering files, that 10s window is regularly exceeded between modules,
+# causing the postgres container to vanish mid-session and every subsequent
+# test to fail with a connection-refused on the cached mapped port. The
+# `pg_container` fixture below already stops the container in its finally
+# block, so Ryuk has nothing to clean up. Must be set before any
+# `testcontainers` import.
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 import pytest  # noqa: E402
@@ -24,25 +31,13 @@ def pg_container():
         try:
             container.stop()
         except Exception:
-            # Another cleanup process can remove the container before teardown.
+            # Container may have already been removed - ignore cleanup errors
             pass
 
 
 @pytest.fixture(scope="session")
-def db_url(request) -> str:
-    """Use a disposable external test database or start PostgreSQL in Docker.
-
-    IDEGYM_TEST_DATABASE_URL must use asyncpg and name an idegym_test_* database.
-    Tests create and truncate tables in this database.
-    """
-    from sqlalchemy.engine import make_url
-
-    if external_url := os.environ.get("IDEGYM_TEST_DATABASE_URL"):
-        parsed = make_url(external_url)
-        if parsed.drivername != "postgresql+asyncpg" or not (parsed.database or "").startswith("idegym_test_"):
-            raise ValueError("IDEGYM_TEST_DATABASE_URL requires postgresql+asyncpg and an idegym_test_* database")
-        return external_url
-    pg_container = request.getfixturevalue("pg_container")
+def db_url(pg_container) -> str:
+    """Build an asyncpg-compatible URL from the running container."""
     sync_url = pg_container.get_connection_url()
     return sync_url.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
 

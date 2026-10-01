@@ -295,7 +295,6 @@ async def get_idegym_server_by_generated_name(db: AsyncSession, generated_name: 
 
 
 async def get_idegym_servers_by_client_id(db: AsyncSession, client_id: UUID) -> list[IdeGYMServer]:
-    """Return the client's full server history, including terminal servers."""
     query = select(IdeGYMServer).filter(IdeGYMServer.client_id == client_id)
     result = await db.execute(query)
     return result.scalars().all()
