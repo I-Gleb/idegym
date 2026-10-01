@@ -12,6 +12,7 @@ from idegym.orchestrator.database.database import connect_db_engine
 from idegym.orchestrator.main import configure_process, load_config
 from idegym.utils.logging import get_logger
 from idegym.watcher.cleanup import cleanup_inactive_pods
+from idegym.watcher.operation_retention import cleanup_expired_operations
 from prometheus_client import REGISTRY
 from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST, generate_latest
 
@@ -39,6 +40,10 @@ async def lifespan(app: FastAPI):
         name="idegym-inactive-pods-cleanup",
         coro=cleanup_inactive_pods(config.orchestrator.watcher),
     )
+    retention_task = create_task(
+        name="idegym-operation-retention",
+        coro=cleanup_expired_operations(config.orchestrator.watcher),
+    )
     logger.info("Started background task to cleanup inactive pods!")
 
     try:
@@ -46,7 +51,8 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("Stopping watcher cleanup task...")
         cleanup_task.cancel()
-        await gather(cleanup_task, return_exceptions=True)
+        retention_task.cancel()
+        await gather(cleanup_task, retention_task, return_exceptions=True)
         logger.info("Watcher cleanup task stopped!")
 
 

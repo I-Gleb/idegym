@@ -525,9 +525,7 @@ Returns the status and pushed image tag for a single Kaniko job.
 GET /api/operations/status/{operation_id}
 ```
 
-Returns the current state of an async operation.
-
-**Response:**
+Returns HTTP 200 with the current operation state while its payloads remain available:
 
 ```json
 {
@@ -541,13 +539,81 @@ Returns the current state of an async operation.
   "orchestrator_pod": "orchestrator-abc-123",
   "scheduled_at": 1234567890000,
   "started_at": 1234567890010,
-  "finished_at": 1234567890800
+  "finished_at": 1234567890800,
+  "payloads_expired_at": null
 }
 ```
 
 Operation types: `START_SERVER`, `STOP_SERVER`, `RESTART_SERVER`, `STOP_CLIENT`, `FORWARD_REQUEST`, `REGISTER_CLIENT_WITH_NODES`.
 
 Status values: `SCHEDULED`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELLED`, `FINISHED_BY_WATCHER`.
+
+When terminal payloads expire, HTTP 410 returns
+`detail.code="operation_payload_expired"` and `detail.operation` with the audit
+fields, the original status, and `payloads_expired_at` in epoch milliseconds.
+Both `request` and `result` are null. HTTP 404 means the operation is unknown or
+its audit row has been deleted. Active operations remain intact.
+
+Early payload expiration is disabled by default. The proposed policy keeps
+terminal payloads for 24 hours and audit metadata for 14 days, both measured
+from completion. Eligibility requires a terminal status, a known `finished_at`,
+and completion strictly before the cutoff. Existing stale-operation marking
+starts a fresh retention grace. Confirm that offline consumers accept the
+shorter history or arrange an archive before enabling payload expiration.
+
+The watcher runs retention separately from lifecycle cleanup, without its
+advisory lock. Batches skip locked rows, clear both payloads together, commit
+independently, and return their connection to the existing watcher pool.
+Cancellation rolls back the current transaction. Expired rows reject late result
+updates. Metrics prefixed `idegym_operation_retention_` expose committed rows/bytes,
+duration, failures, and oldest eligible lag; lost commit acknowledgments can
+undercount metrics. Payload expiration excludes rows already due for audit deletion.
+
+| Environment variable | Default |
+| --- | --- |
+| `IDEGYM_OPERATION_RETENTION_ENABLED` | `True` |
+| `IDEGYM_OPERATION_PAYLOAD_EXPIRATION_ENABLED` | `False` |
+| `IDEGYM_OPERATION_PAYLOAD_MAX_AGE` | `P1D` |
+| `IDEGYM_WATCHER_REQUEST_MAX_AGE` | `P14D` |
+| `IDEGYM_OPERATION_RETENTION_INTERVAL` | `PT5S` |
+| `IDEGYM_OPERATION_RETENTION_BATCH_SIZE` | `250` |
+| `IDEGYM_OPERATION_RETENTION_MAX_ROWS_PER_PASS` | `10000` |
+| `IDEGYM_OPERATION_RETENTION_MAX_PASS_SECONDS` | `2` |
+| `IDEGYM_OPERATION_RETENTION_BATCH_TIMEOUT_SECONDS` | `1` |
+
+Audit age must cover payload age. Both actions share the pass budget; batch
+deadlines include pool checkout and commit. Transaction-local statement/lock
+timeouts bound database waits; cancellation recovery still needs a responsive
+connection. Validate budgets against foreground latency, cleanup lag, WAL, vacuum,
+and disk growth. Steady cleanup needs roughly two row mutations per arriving
+operation, plus backlog drain. Vacuum makes removed data reusable; relation files
+can remain allocated. WAL and migration space need separate allowances.
+
+Revision `007` follows `006`. Before rolling images against a populated database,
+prepare/check `006`, then run the candidate image with its `POSTGRES_*` environment:
+
+```bash
+python -m idegym.orchestrator.migrations.operation_retention_schema prepare
+python -m idegym.orchestrator.migrations.operation_retention_schema check
+```
+
+Preparation takes migration lock `42239`, adds the nullable marker without a
+backfill, and builds two partial indexes concurrently. Payloads and Alembic's
+revision remain unchanged. After an interrupted build, inspect activity before
+using `prepare --repair-invalid`; repair refuses unexpected definitions or active
+builds. Startup refuses an unprepared populated table instead of building its
+indexes during rollout. Roll matched orchestrator/watcher images within the
+connection/surge budget. Enable payload expiration on the watcher only after
+the history-policy decision and all readers/writers understand expiration.
+
+For rollback, set `IDEGYM_OPERATION_RETENTION_ENABLED=False` and roll the watcher;
+lifecycle cleanup continues. Disabling only payload expiration leaves audit
+deletion enabled. Keep expiration-aware readers/writers. Downgrading `007` to
+`006` retains the marker and indexes; coordinate schema/image rollback under
+the migration lock using the [rollback sequence](docs/live-server-queries.md#roll-back-the-application).
+Old images cannot report expiration and their watcher ignores the disable switch.
+Deleted payloads/audit rows require an archive or separately restored backup;
+code rollback cannot recover them.
 
 ---
 
@@ -608,15 +674,16 @@ The orchestrator ships a lightweight HTML dashboard for monitoring:
 |--------|------|-------------|
 | `id` | bigint (PK, auto) | Operation identifier |
 | `request_type` | string | `START_SERVER`, `STOP_SERVER`, etc. |
-| `status` | string | `SCHEDULED` → `IN_PROGRESS` → `SUCCEEDED`/`FAILED`/`CANCELLED` |
-| `request` | text | Original request JSON |
-| `result` | text | Final result JSON (on success) |
+| `status` | string | `SCHEDULED`, `IN_PROGRESS`, `SUCCEEDED`, `FAILED`, `CANCELLED`, or `FINISHED_BY_WATCHER` |
+| `request` | text | Original request JSON; null after payload expiration |
+| `result` | text | Serialized result, including failed forwards; null after payload expiration |
 | `client_id` | UUID (FK) | Related client |
 | `server_id` | bigint (FK) | Related server (if applicable) |
 | `orchestrator_pod` | string | Pod name processing the operation |
 | `scheduled_at` | bigint | Milliseconds since epoch |
 | `started_at` | bigint | Milliseconds since epoch |
 | `finished_at` | bigint | Milliseconds since epoch |
+| `payloads_expired_at` | bigint | Milliseconds since epoch when both payloads were removed; null before expiration |
 
 ### JobStatusRecord
 

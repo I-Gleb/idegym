@@ -14,7 +14,6 @@ from idegym.backend.utils.kubernetes_client import (
 from idegym.backend.utils.utils import log_exceptions
 from idegym.orchestrator.database.database import (
     acquire_advisory_lock,
-    delete_old_async_operations,
     get_clients_by_status,
     get_db_session,
     get_idegym_servers_by_status,
@@ -134,12 +133,8 @@ async def cleanup_clients(db: AsyncSession, current_time: int, inactive_timeout:
 
 
 @log_exceptions("Error cleaning up async operations", logger, swallow=True)
-async def cleanup_requests(db: AsyncSession, current_time: int, max_age: Duration, stale_inprogress: Duration):
-    """
-    Delete async operations older than max_age and mark stale IN_PROGRESS ones as FINISHED_BY_WATCHER.
-    """
-
-    await delete_old_async_operations(db, current_time, max_age)
+async def cleanup_requests(db: AsyncSession, current_time: int, stale_inprogress: Duration):
+    """Mark stale operations; the retention worker owns payload and audit cleanup."""
     await mark_stale_async_operations_as_finished(db, current_time, stale_inprogress)
 
 
@@ -179,7 +174,6 @@ async def perform_cleanup_operations(
     current_time: int,
     inactive_timeout: Duration,
     finished_timeout: Duration,
-    requests_max_age: Duration,
     requests_stale: Duration,
     namespace: str,
     crash_detection_enabled: bool = True,
@@ -204,7 +198,7 @@ async def perform_cleanup_operations(
         await reconcile_pods_with_db(db, namespace=namespace, grace=orphan_grace)
     if usage_reconcile_enabled:
         await reconcile_resource_usage(db)
-    await cleanup_requests(db, current_time, requests_max_age, requests_stale)
+    await cleanup_requests(db, current_time, requests_stale)
     await check_orphaned_kaniko_jobs(db, namespace)
 
 
@@ -254,7 +248,6 @@ async def cleanup_inactive_pods(watcher_config: WatcherConfig):
                     current_time,
                     watcher_config.inactive_timeout,
                     watcher_config.finished_timeout,
-                    watcher_config.request_max_age,
                     watcher_config.request_stale,
                     namespace,
                     crash_detection_enabled=watcher_config.crash_detection_enabled,

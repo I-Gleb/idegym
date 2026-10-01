@@ -1,0 +1,3 @@
+-- Retain the nullable expiration marker and indexes during application rollback.
+-- Removing the marker loses the distinction between expired and originally absent payloads.
+-- Payload deletion is irreversible without an external archive or backup.

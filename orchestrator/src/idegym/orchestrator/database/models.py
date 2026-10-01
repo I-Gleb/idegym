@@ -9,6 +9,11 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase
 
+TERMINAL_OPERATION_PREDICATE = (
+    "status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'FINISHED_BY_WATCHER') AND finished_at IS NOT NULL"
+)
+UNEXPIRED_OPERATION_PREDICATE = f"{TERMINAL_OPERATION_PREDICATE} AND payloads_expired_at IS NULL"
+
 
 def current_time_millis():
     return int(time.time() * 1000)
@@ -164,6 +169,20 @@ class SnapshotJobRecord(Base):
 
 class AsyncOperation(Base):
     __tablename__ = "async_operations"
+    __table_args__ = (
+        Index(
+            "ix_async_operations_terminal_finished",
+            "finished_at",
+            "id",
+            postgresql_where=text(TERMINAL_OPERATION_PREDICATE),
+        ),
+        Index(
+            "ix_async_operations_payload_retention",
+            "finished_at",
+            "id",
+            postgresql_where=text(UNEXPIRED_OPERATION_PREDICATE),
+        ),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
@@ -181,3 +200,4 @@ class AsyncOperation(Base):
     scheduled_at = Column(BigInteger, default=current_time_millis)
     started_at = Column(BigInteger, nullable=True)
     finished_at = Column(BigInteger, nullable=True)
+    payloads_expired_at = Column(BigInteger, nullable=True)
