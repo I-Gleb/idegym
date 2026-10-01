@@ -40,6 +40,7 @@ class AsyncOperationStatusResponse(BaseModel):
     scheduled_at: int = Field(description="Epoch milliseconds")
     started_at: Optional[int] = Field(default=None, description="Epoch milliseconds")
     finished_at: Optional[int] = Field(default=None, description="Epoch milliseconds")
+    payloads_expired_at: Optional[int] = Field(default=None, description="Payload removal time in epoch milliseconds")
 
 
 class ForwardRequestPayload(BaseModel):

@@ -12,6 +12,7 @@ from idegym.orchestrator.database.database import connect_db_engine
 from idegym.orchestrator.main import configure_process, load_config
 from idegym.utils.logging import get_logger
 from idegym.watcher.cleanup import cleanup_inactive_pods
+from idegym.watcher.operation_retention import cleanup_operation_history
 from prometheus_client import REGISTRY
 from prometheus_client.openmetrics.exposition import CONTENT_TYPE_LATEST, generate_latest
 
@@ -35,19 +36,19 @@ async def lifespan(app: FastAPI):
         config=sqlalchemy_config,
     )
 
-    cleanup_task = create_task(
-        name="idegym-inactive-pods-cleanup",
-        coro=cleanup_inactive_pods(config.orchestrator.watcher),
-    )
-    logger.info("Started background task to cleanup inactive pods!")
+    tasks = [
+        create_task(cleanup_inactive_pods(config.orchestrator.watcher), name="idegym-inactive-pods-cleanup"),
+        create_task(cleanup_operation_history(config.orchestrator.watcher), name="idegym-operation-retention"),
+    ]
+    logger.info("Started watcher maintenance tasks")
 
     try:
         yield
     finally:
-        logger.info("Stopping watcher cleanup task...")
-        cleanup_task.cancel()
-        await gather(cleanup_task, return_exceptions=True)
-        logger.info("Watcher cleanup task stopped!")
+        for task in tasks:
+            task.cancel()
+        await gather(*tasks, return_exceptions=True)
+        logger.info("Stopped watcher maintenance tasks")
 
 
 def create_app() -> FastAPI:

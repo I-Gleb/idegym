@@ -27,7 +27,7 @@ from idegym.utils.serializer import serialize_as_json_string
 from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from sqlalchemy import Text, delete, func, select, text, update
+from sqlalchemy import Text, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine  # noqa: N812
 from sqlalchemy.ext.asyncio import async_sessionmaker as AsyncSessionMaker
 from sqlalchemy.orm.attributes import set_committed_value
@@ -924,21 +924,6 @@ async def release_advisory_lock(db: AsyncSession, lock_id: int) -> bool:
     except Exception as e:
         logger.error(f"Failed to release advisory lock {lock_id}: {e}")
         return False
-
-
-async def delete_old_async_operations(db: AsyncSession, current_time: int, max_age: Duration) -> int:
-    """Delete completed async operations older than max_age. Returns number of deleted rows."""
-    try:
-        max_age_ms = int(max_age.total_seconds() * 1000)
-        result = await db.execute(delete(AsyncOperation).where(AsyncOperation.started_at < (current_time - max_age_ms)))
-        deleted_count = result.rowcount or 0
-        await db.commit()
-        logger.info(f"Deleted {deleted_count} async operations older than {max_age}")
-        return deleted_count
-    except Exception:
-        logger.exception("Error deleting old async operations")
-        await db.rollback()
-        return 0
 
 
 async def save_snapshot(

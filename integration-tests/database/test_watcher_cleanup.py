@@ -107,7 +107,7 @@ async def test_cleanup_clients_marks_inactive_client_killed(db: AsyncSession, mo
     mock_k8s["change_number_of_spun_nodes"].assert_awaited_once()
 
 
-async def test_cleanup_requests_deletes_old_and_marks_stale(db: AsyncSession, mock_k8s):
+async def test_cleanup_requests_marks_stale_without_deleting_history(db: AsyncSession, mock_k8s):
     now = int(time.time() * 1000)
     client = await _make_client(db, last_heartbeat_time=now)
 
@@ -115,7 +115,8 @@ async def test_cleanup_requests_deletes_old_and_marks_stale(db: AsyncSession, mo
         request_type=AsyncOperationType.START_SERVER,
         status=AsyncOperationStatus.SUCCEEDED,
         client_id=client.id,
-        started_at=now - 15 * DAY_MS,  # older than max_age (14d) -> deleted
+        started_at=now - 15 * DAY_MS,
+        finished_at=now - 15 * DAY_MS,
     )
     stale_op = AsyncOperation(
         request_type=AsyncOperationType.START_SERVER,
@@ -130,12 +131,13 @@ async def test_cleanup_requests_deletes_old_and_marks_stale(db: AsyncSession, mo
     await cleanup_requests(
         db,
         now,
-        max_age=Duration(days=14),
         stale_inprogress=Duration(hours=24),
     )
 
     db.expire_all()
-    assert (await db.execute(select(AsyncOperation).where(AsyncOperation.id == old_id))).scalar_one_or_none() is None
+    assert (
+        await db.execute(select(AsyncOperation).where(AsyncOperation.id == old_id))
+    ).scalar_one_or_none() is not None
     reloaded_stale = await _reload(db, AsyncOperation, stale_id)
     assert reloaded_stale.status == AsyncOperationStatus.FINISHED_BY_WATCHER
 

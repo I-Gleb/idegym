@@ -265,9 +265,14 @@ class WatcherConfig(BaseModel):
         default=Duration(minutes=5),
     )
     request_max_age: Duration = Field(
-        description="Maximum age of request records to retain",
+        description="Time after completion to retain operation metadata",
         default=Duration(days=14),
     )
+    operation_payload_expiration_enabled: bool = False
+    operation_payload_max_age: Duration = Field(default=Duration(days=1))
+    operation_retention_batch_size: int = Field(default=500, ge=1, le=10000)
+    operation_retention_timeout_ms: int = Field(default=5000, gt=0)
+    operation_retention_pause: Duration = Field(default=Duration(milliseconds=100))
     request_stale: Duration = Field(
         description="Age after which IN_PROGRESS requests are marked as finished",
         default=Duration(hours=24),
