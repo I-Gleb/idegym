@@ -35,6 +35,7 @@ class Client(Base):
 class IdeGYMServer(Base):
     __tablename__ = "servers"
     __table_args__ = (
+        Index("ix_servers_client_id", "client_id"),
         # Partial index over the statuses that hold resource quota (migration 005); the watcher's
         # per-tick scans and the usage recount read only these rows.
         Index(

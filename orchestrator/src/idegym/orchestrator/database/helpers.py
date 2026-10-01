@@ -10,12 +10,12 @@ from idegym.orchestrator.database.database import (
     check_resources_and_save_server,
     find_matching_finished_server,
     find_snapshot_by_request_hash,
+    get_alive_idegym_servers_by_client_id,
     get_async_operation,
     get_client,
     get_client_name,
     get_db_session,
     get_idegym_server,
-    get_idegym_servers_by_client_id,
     get_job_status,
     get_snapshot_job,
     get_snapshot_job_with_name,
@@ -208,12 +208,7 @@ async def find_matching_finished_server_in_db(
 
 @with_db_session
 async def find_alive_servers(db: AsyncSession, client_id: UUID) -> list[AliveServerInfo]:
-    servers_info = []
-    servers = await get_idegym_servers_by_client_id(db, client_id)
-    for server in servers:
-        if server.availability in {AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED}:
-            servers_info.append(AliveServerInfo(id=server.id, generated_name=server.generated_name))
-    return servers_info
+    return await get_alive_idegym_servers_by_client_id(db, client_id)
 
 
 @with_db_session

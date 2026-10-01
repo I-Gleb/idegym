@@ -1,0 +1,13 @@
+Extracted PostgreSQL EXPLAIN output from the October 1 incident investigation.
+
+BEGIN
+SET
+                                                                                                                                         QUERY PLAN
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Gather  (cost=1000.00..39904.30 rows=1 width=525)
+   Output: id, client_id, client_name, server_name, generated_name, namespace, created_at, last_heartbeat_time, availability, image_tag, container_runtime, cpu, ram, run_as_root, server_kind, service_port, max_restarts, details, snapshot_id, container_port, pod_ip, pod_manifest
+   Workers Planned: 2
+   ->  Parallel Seq Scan on public.servers  (cost=0.00..38904.20 rows=1 width=525)
+         Output: id, client_id, client_name, server_name, generated_name, namespace, created_at, last_heartbeat_time, availability, image_tag, container_runtime, cpu, ram, run_as_root, server_kind, service_port, max_restarts, details, snapshot_id, container_port, pod_ip, pod_manifest
+         Filter: (servers.client_id = '00000000-0000-0000-0000-000000000000'::uuid)
+(6 rows)

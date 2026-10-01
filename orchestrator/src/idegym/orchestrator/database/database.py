@@ -6,6 +6,7 @@ from uuid import UUID
 
 from idegym.api.config import SQLAlchemyConfig
 from idegym.api.orchestrator.operations import AsyncOperationStatus, AsyncOperationType
+from idegym.api.orchestrator.servers import AliveServerInfo
 from idegym.api.orchestrator.snapshots import SnapshotPipelineJob
 from idegym.api.status import Status
 from idegym.api.type import Duration
@@ -27,7 +28,7 @@ from idegym.utils.serializer import serialize_as_json_string
 from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from sqlalchemy import Text, delete, func, select, text, update
+from sqlalchemy import Text, delete, func, literal, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine  # noqa: N812
 from sqlalchemy.ext.asyncio import async_sessionmaker as AsyncSessionMaker
 from sqlalchemy.orm.attributes import set_committed_value
@@ -294,9 +295,29 @@ async def get_idegym_server_by_generated_name(db: AsyncSession, generated_name: 
 
 
 async def get_idegym_servers_by_client_id(db: AsyncSession, client_id: UUID) -> list[IdeGYMServer]:
+    """Return the client's full server history, including terminal servers."""
     query = select(IdeGYMServer).filter(IdeGYMServer.client_id == client_id)
     result = await db.execute(query)
     return result.scalars().all()
+
+
+async def get_alive_idegym_servers_by_client_id(db: AsyncSession, client_id: UUID) -> list[AliveServerInfo]:
+    """Return IDs and generated names of the client's ALIVE and REUSED servers.
+
+    FINISHED servers still hold quota but are excluded from this live-server API.
+    """
+    query = select(IdeGYMServer.id, IdeGYMServer.generated_name).where(
+        IdeGYMServer.client_id == client_id,
+        # Fixed SQL statuses let generic prepared plans use the partial ix_servers_live index.
+        IdeGYMServer.availability.in_(
+            [
+                literal(status.value, literal_execute=True)
+                for status in (AvailabilityStatus.ALIVE, AvailabilityStatus.REUSED)
+            ]
+        ),
+    )
+    result = await db.execute(query)
+    return [AliveServerInfo(id=row.id, generated_name=row.generated_name) for row in result]
 
 
 async def get_running_idegym_servers(db: AsyncSession) -> list[IdeGYMServer]:

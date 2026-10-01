@@ -1,0 +1,20 @@
+BEGIN
+SET
+                                 QUERY PLAN
+----------------------------------------------------------------------------
+ Gather  (cost=1000.00..39904.30 rows=1 width=525)
+   Workers Planned: 2
+   ->  Parallel Seq Scan on servers  (cost=0.00..38904.20 rows=1 width=525)
+         Filter: (client_id = '00000000-0000-0000-0000-000000000000'::uuid)
+(4 rows)
+
+SET
+                                 QUERY PLAN
+----------------------------------------------------------------------------
+ Gather  (cost=1000.00..39904.30 rows=1 width=525)
+   Workers Planned: 2
+   ->  Parallel Seq Scan on servers  (cost=0.00..38904.20 rows=1 width=525)
+         Filter: (client_id = '00000000-0000-0000-0000-000000000000'::uuid)
+(4 rows)
+
+COMMIT

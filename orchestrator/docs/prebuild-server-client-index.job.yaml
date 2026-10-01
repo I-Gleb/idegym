@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: idegym-server-client-index-006-
+  namespace: mellum
+  labels:
+    app: idegym-server-client-index
+    kueue.x-k8s.io/queue-name: default
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 2400
+  template:
+    metadata:
+      labels:
+        app: idegym-server-client-index
+        app.kubernetes.io/part-of: idegym
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      serviceAccountName: idegym-orchestrator
+      imagePullSecrets:
+        - name: regcred-west1-west4
+      nodeSelector:
+        node.kubernetes.io/instance-type: e2-standard-16
+      tolerations:
+        - key: pd-balanced
+          value: "true"
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: cloud.google.com/gke-spot
+                    operator: DoesNotExist
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: index-prebuild
+          image: REPLACE_WITH_REVIEWED_ORCHESTRATOR_IMAGE_DIGEST
+          command: [/opt/orchestrator/.venv/bin/python]
+          args:
+            - -m
+            - idegym.orchestrator.migrations.server_client_index
+            - build
+            - --lock-timeout-seconds
+            - "5"
+            - --statement-timeout-seconds
+            - "1800"
+          env:
+            - name: POSTGRES_HOST
+              value: idegym-postgres
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_USER
+              value: idegym
+            - name: POSTGRES_DB
+              value: idegym
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi

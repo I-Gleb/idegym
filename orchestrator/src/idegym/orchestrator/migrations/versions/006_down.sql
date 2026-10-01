@@ -1,0 +1,3 @@
+-- Retain ix_servers_client_id when reverting the application and Alembic revision.
+-- Remove it only in a separate maintenance window with:
+-- DROP INDEX CONCURRENTLY IF EXISTS public.ix_servers_client_id;
