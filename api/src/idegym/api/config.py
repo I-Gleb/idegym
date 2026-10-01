@@ -250,6 +250,29 @@ class MCPConfig(BaseModel):
     )
 
 
+class OperationRetentionConfig(BaseModel):
+    """Bound terminal-operation cleanup; payload expiration requires explicit activation."""
+
+    enabled: bool = Field(default=True, description="Run bounded terminal-operation retention")
+    payload_expiration_enabled: bool = Field(default=False)
+    payload_max_age: Duration = Field(
+        default=Duration(days=1), gt=Duration(0), description="Minimum payload lifetime after completion"
+    )
+    interval: Duration = Field(default=Duration(seconds=5), gt=Duration(0))
+    batch_size: int = Field(default=250, ge=1, le=1000)
+    max_rows_per_pass: int = Field(default=10000, ge=1)
+    max_pass_seconds: float = Field(default=2.0, gt=0, le=60)
+    batch_timeout_seconds: float = Field(default=1.0, gt=0, le=10)
+
+    @model_validator(mode="after")
+    def validate_budgets(self):
+        if self.max_rows_per_pass < 2 * self.batch_size:
+            raise ValueError("max_rows_per_pass must allow one payload batch and one audit batch")
+        if self.batch_timeout_seconds > self.max_pass_seconds:
+            raise ValueError("batch_timeout_seconds must not exceed max_pass_seconds")
+        return self
+
+
 class WatcherConfig(BaseModel):
     cleanup_interval: Duration = Field(default=Duration(seconds=60))
     crash_detection_enabled: bool = Field(
@@ -265,9 +288,11 @@ class WatcherConfig(BaseModel):
         default=Duration(minutes=5),
     )
     request_max_age: Duration = Field(
-        description="Maximum age of request records to retain",
+        description="Minimum terminal-operation audit lifetime after completion",
         default=Duration(days=14),
+        gt=Duration(0),
     )
+    operation_retention: OperationRetentionConfig = Field(default_factory=OperationRetentionConfig)
     request_stale: Duration = Field(
         description="Age after which IN_PROGRESS requests are marked as finished",
         default=Duration(hours=24),
@@ -284,6 +309,13 @@ class WatcherConfig(BaseModel):
         description="Recount resource_limit_rules usage from live servers every tick and correct drift",
         default=True,
     )
+
+    @model_validator(mode="after")
+    def validate_operation_retention(self):
+        retention = self.operation_retention
+        if retention.payload_expiration_enabled and retention.payload_max_age > self.request_max_age:
+            raise ValueError("request_max_age must cover the payload retention lifetime")
+        return self
 
 
 class OrchestratorConfig(BaseModel):

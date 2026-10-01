@@ -5,7 +5,11 @@ from typing import Any, Iterable, NamedTuple, Optional, cast
 from uuid import UUID
 
 from idegym.api.config import SQLAlchemyConfig
-from idegym.api.orchestrator.operations import AsyncOperationStatus, AsyncOperationType
+from idegym.api.orchestrator.operations import (
+    TERMINAL_ASYNC_OPERATION_STATUSES,
+    AsyncOperationStatus,
+    AsyncOperationType,
+)
 from idegym.api.orchestrator.servers import AliveServerInfo
 from idegym.api.orchestrator.snapshots import SnapshotPipelineJob
 from idegym.api.status import Status
@@ -22,13 +26,14 @@ from idegym.orchestrator.database.models import (
     SnapshotRecord,
     current_time_millis,
 )
+from idegym.orchestrator.database.operation_retention import clean_operation_batch
 from idegym.orchestrator.migration_manager import MigrationManager
 from idegym.utils.logging import get_logger
 from idegym.utils.serializer import serialize_as_json_string
 from opentelemetry.instrumentation.asyncpg import AsyncPGInstrumentor
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from sqlalchemy import Text, delete, func, literal, select, text, update
+from sqlalchemy import Text, func, literal, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine  # noqa: N812
 from sqlalchemy.ext.asyncio import async_sessionmaker as AsyncSessionMaker
 from sqlalchemy.orm.attributes import set_committed_value
@@ -611,7 +616,9 @@ async def update_idegym_server_pod(
 
 
 async def get_async_operation(db: AsyncSession, async_operation_id: int) -> Optional[AsyncOperation]:
-    result = await db.execute(select(AsyncOperation).filter(AsyncOperation.id == async_operation_id))
+    result = await db.execute(
+        select(AsyncOperation).filter(AsyncOperation.id == async_operation_id).execution_options(populate_existing=True)
+    )
     return result.scalar_one_or_none()
 
 
@@ -641,11 +648,20 @@ async def update_async_operation(
     orchestrator_pod: Optional[str] = None,
     result: Optional[Any] = None,
 ) -> Optional[AsyncOperation]:
-    query = select(AsyncOperation).filter(AsyncOperation.id == async_operation_id).with_for_update()
+    query = (
+        select(AsyncOperation)
+        .filter(AsyncOperation.id == async_operation_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     result_query = await db.execute(query)
     async_operation = result_query.scalar_one_or_none()
     if not async_operation:
         return None
+
+    if async_operation.payloads_expired_at is not None:
+        await db.commit()
+        return async_operation
 
     async_operation.status = async_operation_status
     async_operation.orchestrator_pod = orchestrator_pod if orchestrator_pod else async_operation.orchestrator_pod
@@ -656,11 +672,7 @@ async def update_async_operation(
     if async_operation_status is AsyncOperationStatus.IN_PROGRESS and async_operation.finished_at is None:
         async_operation.started_at = current_time_millis()
 
-    if async_operation_status in [
-        AsyncOperationStatus.SUCCEEDED,
-        AsyncOperationStatus.FAILED,
-        AsyncOperationStatus.CANCELLED,
-    ]:
+    if async_operation_status in TERMINAL_ASYNC_OPERATION_STATUSES:
         async_operation.finished_at = current_time_millis()
 
     await db.commit()
@@ -946,15 +958,25 @@ async def release_advisory_lock(db: AsyncSession, lock_id: int) -> bool:
         return False
 
 
-async def delete_old_async_operations(db: AsyncSession, current_time: int, max_age: Duration) -> int:
-    """Delete completed async operations older than max_age. Returns number of deleted rows."""
+async def delete_old_async_operations(
+    db: AsyncSession, current_time: int, max_age: Duration, batch_size: int = 250
+) -> int:
+    """Commit one bounded batch of terminal rows whose completion age exceeds ``max_age``.
+
+    ``current_time`` is epoch milliseconds. Active rows and unknown completion times are retained.
+    """
     try:
         max_age_ms = int(max_age.total_seconds() * 1000)
-        result = await db.execute(delete(AsyncOperation).where(AsyncOperation.started_at < (current_time - max_age_ms)))
-        deleted_count = result.rowcount or 0
+        batch = await clean_operation_batch(
+            db,
+            action="audit",
+            cutoff_ms=current_time - max_age_ms,
+            expired_at_ms=current_time,
+            batch_size=batch_size,
+        )
         await db.commit()
-        logger.info(f"Deleted {deleted_count} async operations older than {max_age}")
-        return deleted_count
+        logger.info("Deleted terminal async operations", rows=batch.rows, max_age_seconds=max_age.total_seconds())
+        return batch.rows
     except Exception:
         logger.exception("Error deleting old async operations")
         await db.rollback()

@@ -61,6 +61,15 @@ watcher:
   finished_timeout: ${oc.env:IDEGYM_WATCHER_FINISHED_TIMEOUT, "PT5M"}
   request_max_age: ${oc.env:IDEGYM_WATCHER_REQUEST_MAX_AGE, "P14D"}
   request_stale: ${oc.env:IDEGYM_WATCHER_REQUEST_STALE, "PT24H"}
+  operation_retention:
+    enabled: ${oc.env:IDEGYM_OPERATION_RETENTION_ENABLED, "True"}
+    payload_expiration_enabled: ${oc.env:IDEGYM_OPERATION_PAYLOAD_EXPIRATION_ENABLED, "False"}
+    payload_max_age: ${oc.env:IDEGYM_OPERATION_PAYLOAD_MAX_AGE, "P1D"}
+    interval: ${oc.env:IDEGYM_OPERATION_RETENTION_INTERVAL, "PT5S"}
+    batch_size: ${oc.env:IDEGYM_OPERATION_RETENTION_BATCH_SIZE, 250}
+    max_rows_per_pass: ${oc.env:IDEGYM_OPERATION_RETENTION_MAX_ROWS_PER_PASS, 10000}
+    max_pass_seconds: ${oc.env:IDEGYM_OPERATION_RETENTION_MAX_PASS_SECONDS, 2.0}
+    batch_timeout_seconds: ${oc.env:IDEGYM_OPERATION_RETENTION_BATCH_TIMEOUT_SECONDS, 1.0}
   orphan_reap_enabled: ${oc.env:IDEGYM_WATCHER_ORPHAN_REAP_ENABLED, "True"}
   orphan_grace: ${oc.env:IDEGYM_WATCHER_ORPHAN_GRACE, "PT2M"}
   usage_reconcile_enabled: ${oc.env:IDEGYM_WATCHER_USAGE_RECONCILE_ENABLED, "True"}

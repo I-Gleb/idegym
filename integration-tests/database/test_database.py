@@ -716,13 +716,14 @@ async def test_delete_old_async_operations(db: AsyncSession):
     client = await _make_client(db)
     op = await save_async_operation(db, AsyncOperationType.FORWARD_REQUEST, client_id=client.id)
 
-    # Mark it started long ago
-    old_ts = 1_000_000  # epoch 1000s in ms
+    old_ts = 1_000_000
     op.started_at = old_ts
+    op.status = AsyncOperationStatus.SUCCEEDED
+    op.finished_at = old_ts
     await db.commit()
 
-    current_time = 10_000_000  # 10000s in ms
-    max_age = timedelta(seconds=1)  # 1 second → anything started before 9999s should be deleted
+    current_time = 10_000_000
+    max_age = timedelta(seconds=1)
 
     deleted = await delete_old_async_operations(db, current_time=current_time, max_age=max_age)
     assert deleted == 1
@@ -736,7 +737,9 @@ async def test_delete_old_async_operations_leaves_recent_ones(db: AsyncSession):
     op = await save_async_operation(db, AsyncOperationType.FORWARD_REQUEST, client_id=client.id)
 
     now = 10_000_000
-    op.started_at = now - 500  # started 500 ms ago — within the 1-second window
+    op.started_at = 1_000_000
+    op.status = AsyncOperationStatus.SUCCEEDED
+    op.finished_at = now - 500
     await db.commit()
 
     deleted = await delete_old_async_operations(db, current_time=now, max_age=timedelta(seconds=1))

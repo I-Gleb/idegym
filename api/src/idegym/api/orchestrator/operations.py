@@ -24,6 +24,16 @@ class AsyncOperationStatus(StrEnum):
     FINISHED_BY_WATCHER = "FINISHED_BY_WATCHER"
 
 
+TERMINAL_ASYNC_OPERATION_STATUSES = frozenset(
+    {
+        AsyncOperationStatus.SUCCEEDED,
+        AsyncOperationStatus.FAILED,
+        AsyncOperationStatus.CANCELLED,
+        AsyncOperationStatus.FINISHED_BY_WATCHER,
+    }
+)
+
+
 class AsyncOperationStatusResponse(BaseModel):
     id: int
     request_type: str
@@ -40,6 +50,9 @@ class AsyncOperationStatusResponse(BaseModel):
     scheduled_at: int = Field(description="Epoch milliseconds")
     started_at: Optional[int] = Field(default=None, description="Epoch milliseconds")
     finished_at: Optional[int] = Field(default=None, description="Epoch milliseconds")
+    payloads_expired_at: Optional[int] = Field(
+        default=None, description="Epoch milliseconds when request and result payloads were removed"
+    )
 
 
 class ForwardRequestPayload(BaseModel):
