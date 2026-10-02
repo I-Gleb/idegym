@@ -15,7 +15,6 @@ from idegym.backend.utils.utils import log_exceptions
 from idegym.orchestrator.database.database import (
     acquire_advisory_lock,
     get_clients_by_status,
-    get_db_session,
     get_idegym_servers_by_status,
     mark_stale_async_operations_as_finished,
     release_advisory_lock,
@@ -29,7 +28,7 @@ from idegym.utils.logging import get_logger
 from idegym.watcher.crash_detector import detect_crashed_servers
 from idegym.watcher.reconcile import reconcile_pods_with_db, reconcile_resource_usage
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 logger = get_logger(__name__)
 
@@ -213,11 +212,8 @@ async def _wait_for_jitter():
     await asyncio.sleep(jitter)
 
 
-async def cleanup_inactive_pods(watcher_config: WatcherConfig):
-    """
-    Background loop that periodically removes inactive/finished servers and clients.
-    Uses a PostgreSQL advisory lock so that only one orchestrator replica performs cleanup at a time.
-    """
+async def cleanup_inactive_pods(watcher_config: WatcherConfig, db_engine: AsyncEngine):
+    """Remove inactive servers and clients while holding a session-level advisory lock."""
     while True:
         logger.debug(
             f"Inactive server cleanup timeout: {watcher_config.inactive_timeout}, "
@@ -233,30 +229,42 @@ async def cleanup_inactive_pods(watcher_config: WatcherConfig):
 
         current_time = int(time.time() * 1000)
 
-        async with get_db_session() as db:
-            lock_acquired = await acquire_advisory_lock(db, CLEANUP_ADVISORY_LOCK_ID)
+        try:
+            # Session-level locks must stay on one connection across cleanup's commits.
+            async with (
+                db_engine.connect() as connection,
+                AsyncSession(bind=connection, expire_on_commit=False, autoflush=False) as db,
+            ):
+                lock_acquired = await acquire_advisory_lock(db, CLEANUP_ADVISORY_LOCK_ID)
 
-            if not lock_acquired:
-                await _wait_for_jitter()
-                continue
+                if not lock_acquired:
+                    await _wait_for_jitter()
+                    continue
 
-            try:
-                logger.info("Starting cleanup operations with advisory lock acquired")
-                namespace = env.get("__NAMESPACE", "idegym")
-                await perform_cleanup_operations(
-                    db,
-                    current_time,
-                    watcher_config.inactive_timeout,
-                    watcher_config.finished_timeout,
-                    watcher_config.request_stale,
-                    namespace,
-                    crash_detection_enabled=watcher_config.crash_detection_enabled,
-                    orphan_reap_enabled=watcher_config.orphan_reap_enabled,
-                    orphan_grace=watcher_config.orphan_grace,
-                    usage_reconcile_enabled=watcher_config.usage_reconcile_enabled,
-                )
-                logger.info("Completed cleanup operations")
-            except Exception:
-                logger.exception("Error during cleanup operations")
-            finally:
-                await release_advisory_lock(db, CLEANUP_ADVISORY_LOCK_ID)
+                try:
+                    logger.info("Starting cleanup operations with advisory lock acquired")
+                    namespace = env.get("__NAMESPACE", "idegym")
+                    await perform_cleanup_operations(
+                        db,
+                        current_time,
+                        watcher_config.inactive_timeout,
+                        watcher_config.finished_timeout,
+                        watcher_config.request_stale,
+                        namespace,
+                        crash_detection_enabled=watcher_config.crash_detection_enabled,
+                        orphan_reap_enabled=watcher_config.orphan_reap_enabled,
+                        orphan_grace=watcher_config.orphan_grace,
+                        usage_reconcile_enabled=watcher_config.usage_reconcile_enabled,
+                    )
+                    logger.info("Completed cleanup operations")
+                finally:
+                    released = False
+                    try:
+                        # Clear any failed transaction before unlocking.
+                        await db.rollback()
+                        released = await release_advisory_lock(db, CLEANUP_ADVISORY_LOCK_ID)
+                    finally:
+                        if not released:
+                            await connection.invalidate()
+        except Exception:
+            logger.exception("Error during cleanup operations")

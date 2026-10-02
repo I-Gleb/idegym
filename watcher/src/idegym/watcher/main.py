@@ -31,13 +31,13 @@ async def lifespan(app: FastAPI):
     sqlalchemy_config = config.orchestrator.sqlalchemy
     if sqlalchemy_config.application_name == SQLAlchemyConfig.model_fields["application_name"].default:
         sqlalchemy_config = sqlalchemy_config.model_copy(update={"application_name": "idegym-watcher"})
-    connect_db_engine(
+    db_engine = connect_db_engine(
         db_url=config.orchestrator.database.url,
         config=sqlalchemy_config,
     )
 
     tasks = [
-        create_task(cleanup_inactive_pods(config.orchestrator.watcher), name="idegym-inactive-pods-cleanup"),
+        create_task(cleanup_inactive_pods(config.orchestrator.watcher, db_engine), name="idegym-inactive-pods-cleanup"),
         create_task(cleanup_operation_history(config.orchestrator.watcher), name="idegym-operation-retention"),
     ]
     logger.info("Started watcher maintenance tasks")
