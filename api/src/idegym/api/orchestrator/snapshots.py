@@ -45,7 +45,6 @@ class PodSnapshotManualTrigger(BaseModel):
 
 
 class PodSnapshotTriggerReason(StrEnum):
-
     PROCESSING = "Processing"
     COMPLETE = "Complete"
 

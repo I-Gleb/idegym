@@ -60,6 +60,11 @@ watcher:
   inactive_timeout: ${oc.env:IDEGYM_WATCHER_INACTIVE_TIMEOUT, "PT10M"}
   finished_timeout: ${oc.env:IDEGYM_WATCHER_FINISHED_TIMEOUT, "PT5M"}
   request_max_age: ${oc.env:IDEGYM_WATCHER_REQUEST_MAX_AGE, "P14D"}
+  operation_payload_expiration_enabled: ${oc.env:IDEGYM_WATCHER_OPERATION_PAYLOAD_EXPIRATION_ENABLED, "False"}
+  operation_payload_max_age: ${oc.env:IDEGYM_WATCHER_OPERATION_PAYLOAD_MAX_AGE, "P1D"}
+  operation_retention_batch_size: ${oc.env:IDEGYM_WATCHER_OPERATION_RETENTION_BATCH_SIZE, "500"}
+  operation_retention_timeout_ms: ${oc.env:IDEGYM_WATCHER_OPERATION_RETENTION_TIMEOUT_MS, "5000"}
+  operation_retention_pause: ${oc.env:IDEGYM_WATCHER_OPERATION_RETENTION_PAUSE, "PT0.1S"}
   request_stale: ${oc.env:IDEGYM_WATCHER_REQUEST_STALE, "PT24H"}
   orphan_reap_enabled: ${oc.env:IDEGYM_WATCHER_ORPHAN_REAP_ENABLED, "True"}
   orphan_grace: ${oc.env:IDEGYM_WATCHER_ORPHAN_GRACE, "PT2M"}

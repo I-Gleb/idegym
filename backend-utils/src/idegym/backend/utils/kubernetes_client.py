@@ -79,18 +79,19 @@ V1ResourceList = Union[V1ConfigMapList, V1DeploymentList, V1PodDisruptionBudgetL
 
 logger = get_logger(__name__)
 
-# Every sandbox pod carries this one label set, so all sandboxes share a single network
-# identity on label-based dataplanes (Cilium / GKE Dataplane V2) instead of minting one per
-# pod. The server identity lives in annotations, which such dataplanes ignore.
+# Sandbox pods in each stack share a label set and dataplane network identity.
+# The server identity lives in annotations, which label-based dataplanes ignore.
 SANDBOX_APP = "idegym-sandbox"
+# The orchestrator and watcher must use the same component for the lifetime of their pods.
+SANDBOX_COMPONENT = env.get("IDEGYM_SANDBOX_COMPONENT", "sandbox")
 SANDBOX_LABELS: dict[str, str] = {
     "app": SANDBOX_APP,
-    "app.kubernetes.io/component": "sandbox",
+    "app.kubernetes.io/component": SANDBOX_COMPONENT,
     "app.kubernetes.io/name": SANDBOX_APP,
     "app.kubernetes.io/part-of": "idegym",
     "app.kubernetes.io/version": __version__,
 }
-SANDBOX_POD_SELECTOR = "app.kubernetes.io/component=sandbox"
+SANDBOX_POD_SELECTOR = f"app.kubernetes.io/component={SANDBOX_COMPONENT}"
 SERVER_ANNOTATION = "idegym.jetbrains.com/server"
 # GKE PodSnapshot groups pods by this key; it is always an annotation and additionally a label
 # only when pod snapshots are enabled (deploy_server(snapshot_label=True)).

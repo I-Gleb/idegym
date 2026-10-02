@@ -1,28 +1,27 @@
-"""Integration tests for the watcher cleanup loop against a real PostgreSQL instance.
+"""Check watcher cleanup against PostgreSQL with Kubernetes helpers mocked."""
 
-The cleanup functions live in :mod:`idegym.watcher.cleanup` (extracted from the orchestrator).
-They are exercised directly against a testcontainers PostgreSQL database; the Kubernetes-facing
-helpers they import are mocked in the ``idegym.watcher.cleanup`` namespace so the tests stay
-purely at the database layer.
-"""
-
+import asyncio
 import time
 from uuid import uuid4
 
 import pytest
+from idegym.api.config import SQLAlchemyConfig, WatcherConfig
 from idegym.api.orchestrator.clients import AvailabilityStatus
 from idegym.api.orchestrator.operations import AsyncOperationStatus, AsyncOperationType
 from idegym.api.status import Status
 from idegym.api.type import Duration
+from idegym.orchestrator.database import database
 from idegym.orchestrator.database.models import AsyncOperation, Client, IdeGYMServer, JobStatusRecord
+from idegym.watcher import cleanup
 from idegym.watcher.cleanup import (
     check_orphaned_kaniko_jobs,
     cleanup_clients,
     cleanup_requests,
     cleanup_servers,
 )
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from idegym.watcher.operation_retention import retain_operations_once
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 pytestmark = pytest.mark.integration
 
@@ -107,7 +106,7 @@ async def test_cleanup_clients_marks_inactive_client_killed(db: AsyncSession, mo
     mock_k8s["change_number_of_spun_nodes"].assert_awaited_once()
 
 
-async def test_cleanup_requests_deletes_old_and_marks_stale(db: AsyncSession, mock_k8s):
+async def test_cleanup_requests_marks_stale_without_deleting_history(db: AsyncSession, mock_k8s):
     now = int(time.time() * 1000)
     client = await _make_client(db, last_heartbeat_time=now)
 
@@ -115,7 +114,8 @@ async def test_cleanup_requests_deletes_old_and_marks_stale(db: AsyncSession, mo
         request_type=AsyncOperationType.START_SERVER,
         status=AsyncOperationStatus.SUCCEEDED,
         client_id=client.id,
-        started_at=now - 15 * DAY_MS,  # older than max_age (14d) -> deleted
+        started_at=now - 15 * DAY_MS,
+        finished_at=now - 15 * DAY_MS,
     )
     stale_op = AsyncOperation(
         request_type=AsyncOperationType.START_SERVER,
@@ -130,12 +130,13 @@ async def test_cleanup_requests_deletes_old_and_marks_stale(db: AsyncSession, mo
     await cleanup_requests(
         db,
         now,
-        max_age=Duration(days=14),
         stale_inprogress=Duration(hours=24),
     )
 
     db.expire_all()
-    assert (await db.execute(select(AsyncOperation).where(AsyncOperation.id == old_id))).scalar_one_or_none() is None
+    assert (
+        await db.execute(select(AsyncOperation).where(AsyncOperation.id == old_id))
+    ).scalar_one_or_none() is not None
     reloaded_stale = await _reload(db, AsyncOperation, stale_id)
     assert reloaded_stale.status == AsyncOperationStatus.FINISHED_BY_WATCHER
 
@@ -156,3 +157,50 @@ async def test_check_orphaned_kaniko_jobs_reconciles_status(db: AsyncSession, mo
     reloaded = await _reload(db, JobStatusRecord, job_id)
     assert reloaded.status == Status.SUCCESS
     mock_k8s["get_job_status"].assert_awaited()
+
+
+@pytest.mark.parametrize("failure", [None, "connect", "database", "unlock"])
+async def test_cleanup_releases_pinned_lock_with_concurrent_retention(db, db_url, mocker, failure):
+    engine = database.create_db_engine(db_url, SQLAlchemyConfig(pool_size=2, max_overflow=2))
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    mocker.patch.object(database, "SessionFactory", factory)
+    config = WatcherConfig()
+    backend_pids = []
+    unlock_results = []
+    cleanup_engine = engine
+    attempts = 1
+    if failure == "connect":
+        cleanup_engine = mocker.Mock(wraps=engine)
+        cleanup_engine.connect.side_effect = [ConnectionRefusedError("database unavailable"), engine.connect()]
+        attempts = 2
+
+    async def perform(session, *args, **kwargs):
+        backend_pids.append(await session.scalar(text("SELECT pg_backend_pid()")))
+        await retain_operations_once(config)
+        await session.commit()
+        backend_pids.append(await session.scalar(text("SELECT pg_backend_pid()")))
+        if failure == "database":
+            await session.execute(text("SELECT 1 / 0"))
+
+    async def release(session, lock_id):
+        released = False if failure == "unlock" else await database.release_advisory_lock(session, lock_id)
+        unlock_results.append(released)
+        return released
+
+    mocker.patch.object(cleanup, "perform_cleanup_operations", perform)
+    mocker.patch.object(cleanup, "release_advisory_lock", release)
+    # Stop after one complete cleanup pass without waiting for its interval.
+    mocker.patch.object(
+        cleanup, "asyncio", sleep=mocker.AsyncMock(side_effect=[None] * attempts + [asyncio.CancelledError])
+    )
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup.cleanup_inactive_pods(config, cleanup_engine)
+        assert len(backend_pids) == 2
+        assert backend_pids[0] == backend_pids[1]
+        assert unlock_results == [failure != "unlock"]
+        assert await database.acquire_advisory_lock(db, cleanup.CLEANUP_ADVISORY_LOCK_ID)
+        assert await database.release_advisory_lock(db, cleanup.CLEANUP_ADVISORY_LOCK_ID)
+    finally:
+        await engine.dispose()

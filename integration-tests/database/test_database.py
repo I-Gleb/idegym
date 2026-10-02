@@ -17,7 +17,6 @@ from idegym.orchestrator.database.database import (
     check_resources_and_save_server,
     create_client,
     create_resource_limit_rule,
-    delete_old_async_operations,
     find_matching_finished_server,
     find_matching_resource_limit_rule,
     get_alive_clients,
@@ -710,40 +709,6 @@ async def test_update_async_operation_to_succeeded_sets_finished_at(db: AsyncSes
 async def test_update_async_operation_returns_none_for_unknown(db: AsyncSession):
     result = await update_async_operation(db, 99999, AsyncOperationStatus.SUCCEEDED)
     assert result is None
-
-
-async def test_delete_old_async_operations(db: AsyncSession):
-    client = await _make_client(db)
-    op = await save_async_operation(db, AsyncOperationType.FORWARD_REQUEST, client_id=client.id)
-
-    # Mark it started long ago
-    old_ts = 1_000_000  # epoch 1000s in ms
-    op.started_at = old_ts
-    await db.commit()
-
-    current_time = 10_000_000  # 10000s in ms
-    max_age = timedelta(seconds=1)  # 1 second → anything started before 9999s should be deleted
-
-    deleted = await delete_old_async_operations(db, current_time=current_time, max_age=max_age)
-    assert deleted == 1
-
-    fetched = await get_async_operation(db, op.id)
-    assert fetched is None
-
-
-async def test_delete_old_async_operations_leaves_recent_ones(db: AsyncSession):
-    client = await _make_client(db)
-    op = await save_async_operation(db, AsyncOperationType.FORWARD_REQUEST, client_id=client.id)
-
-    now = 10_000_000
-    op.started_at = now - 500  # started 500 ms ago — within the 1-second window
-    await db.commit()
-
-    deleted = await delete_old_async_operations(db, current_time=now, max_age=timedelta(seconds=1))
-    assert deleted == 0
-
-    fetched = await get_async_operation(db, op.id)
-    assert fetched is not None
 
 
 async def test_mark_stale_async_operations_as_finished(db: AsyncSession):

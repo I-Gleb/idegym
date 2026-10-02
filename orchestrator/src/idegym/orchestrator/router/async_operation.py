@@ -15,4 +15,11 @@ async def get_operation_status(operation_id: int):
     async_operation = await find_async_operation(operation_id)
     if not async_operation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Operation with ID {operation_id} not found")
-    return AsyncOperationStatusResponse.model_validate(async_operation, from_attributes=True)
+    operation = AsyncOperationStatusResponse.model_validate(async_operation, from_attributes=True)
+    if operation.payloads_expired_at is not None:
+        operation.request = operation.result = None
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail={"code": "operation_payload_expired", "operation": operation.model_dump(mode="json")},
+        )
+    return operation

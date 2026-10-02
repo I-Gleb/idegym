@@ -161,8 +161,27 @@ class SnapshotJobRecord(Base):
     updated_at = Column(BigInteger, default=current_time_millis)
 
 
+TERMINAL_OPERATION_PREDICATE = (
+    "status IN ('SUCCEEDED', 'FAILED', 'CANCELLED', 'FINISHED_BY_WATCHER') AND finished_at IS NOT NULL"
+)
+
+
 class AsyncOperation(Base):
     __tablename__ = "async_operations"
+    __table_args__ = (
+        Index(
+            "ix_async_operations_terminal_finished",
+            "finished_at",
+            "id",
+            postgresql_where=text(TERMINAL_OPERATION_PREDICATE),
+        ),
+        Index(
+            "ix_async_operations_payload_retention",
+            "finished_at",
+            "id",
+            postgresql_where=text(TERMINAL_OPERATION_PREDICATE + " AND payloads_expired_at IS NULL"),
+        ),
+    )
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
@@ -171,6 +190,7 @@ class AsyncOperation(Base):
 
     request = Column(Text, nullable=True)
     result = Column(Text, nullable=True)
+    payloads_expired_at = Column(BigInteger, nullable=True)
 
     client_id = Column(UUID(as_uuid=True), ForeignKey("clients.id"))
     server_id = Column(BigInteger, ForeignKey("servers.id"), nullable=True)
